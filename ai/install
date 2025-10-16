@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+#
+# Install AI configuration files
+
+cd "$(dirname "$0")"
+AI_DIR=$(pwd -P)
+
+# Symlink all .md files in this directory to home directory
+for md_file in *.md; do
+  if [ -f "$md_file" ]; then
+    target="$HOME/$md_file"
+
+    # Remove existing symlink or file if it exists
+    if [ -L "$target" ]; then
+      rm "$target"
+      echo "Removed existing symlink: $target"
+    elif [ -f "$target" ]; then
+      echo "Warning: $target exists and is not a symlink. Skipping."
+      continue
+    fi
+
+    # Create symlink
+    ln -s "$AI_DIR/$md_file" "$target"
+    echo "Linked $md_file to $target"
+  fi
+done

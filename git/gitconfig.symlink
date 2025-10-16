@@ -1,0 +1,47 @@
+[include]
+  path = ~/.gitconfig.local
+
+[alias]
+  cfp = !git commit -am \"fix\" && git push
+
+[push]
+  autosetupremote = true
+  default = simple
+  followtags = true
+
+[pull]
+  rebase = false
+
+[column]
+  ui = auto
+
+[branch]
+  sort = -committerdate
+
+[tag]
+  sort = version:refname
+
+[init]
+  defaultbranch = main
+
+[diff]
+  algorithm = histogram
+  colormoved = plain
+  mnemonicprefix = true
+  renames = true
+
+[fetch]
+  prune = true
+  prunetags = true
+  all = true
+
+[help]
+  autocorrect = prompt
+
+[core]
+  fsmonitor = true
+  untrackedcache = true
+
+[merge]
+  mergiraf.name = mergiraf
+  mergiraf.driver = mergiraf merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %LD
