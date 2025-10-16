@@ -1,0 +1,14 @@
+[user]
+  name = pauldambra
+  email = paul@posthog.com
+  signingkey = ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE8RBw9CVGwreCjGWqh8E1ay/KKJVF3YRDY13PcVJKpt
+
+[credential]
+  helper = osxkeychain
+
+[gpg]
+  format = ssh
+  ssh.program = /Applications/1Password.app/Contents/MacOS/op-ssh-sign
+
+[commit]
+  gpgsign = true

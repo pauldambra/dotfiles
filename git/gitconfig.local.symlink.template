@@ -1,0 +1,14 @@
+[user]
+  name = AUTHORNAME
+  email = AUTHOREMAIL
+  signingkey = SIGNINGKEY
+
+[credential]
+  helper = GIT_CREDENTIAL_HELPER
+
+[gpg]
+  format = ssh
+  ssh.program = /Applications/1Password.app/Contents/MacOS/op-ssh-sign
+
+[commit]
+  gpgsign = true
