@@ -81,7 +81,6 @@ setup_gitconfig () {
   fi
 }
 
-
 link_file () {
   local src=$1 dst=$2
 
@@ -206,3 +205,8 @@ fi
 
 echo ''
 echo '  All installed!'
+echo ''
+echo '  To apply changes to your current shell, run:'
+echo '    source ~/.zshrc'
+echo ''
+echo '  Or open a new terminal window.'
