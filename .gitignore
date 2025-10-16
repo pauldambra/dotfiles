@@ -1,0 +1,13 @@
+# Local configuration files with sensitive data
+.zshrc.local
+**/gitconfig.local.symlink
+
+# macOS
+.DS_Store
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
