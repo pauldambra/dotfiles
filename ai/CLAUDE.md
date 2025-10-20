@@ -7,6 +7,8 @@ I like "Simple code" that means:
 * Says everything OnceAndOnlyOnce.
 * has no superfluous parts
 
+These are called the simplicity rules.
+
 These rules are in conflict with each other. Sometimes to express every idea we can't say everything only once. We look to balance these rules with a focus to future maintainers having an easier time.
 
 Also... it means we work in three stages
@@ -20,6 +22,16 @@ We should always pause and consider if the working code should be improved to ma
 # tests
 
 * IMPORTANT prefer parameterized tests
+
+# comments
+
+i _never_ want comments in code. every time we see a comment we ask
+
+* should this be a rename refactoring
+* should this be an extract method refactoring
+
+comments are visual noise when they only duplicate information that is present
+often applying the simplicity rules removes them
 
 # validating this file has been read
 
