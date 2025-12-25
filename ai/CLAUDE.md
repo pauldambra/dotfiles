@@ -30,8 +30,11 @@ i _never_ want comments in code. every time we see a comment we ask
 * should this be a rename refactoring
 * should this be an extract method refactoring
 
-comments are visual noise when they only duplicate information that is present
+comments are visual noise when they only duplicate information that is present in the code
+
 often applying the simplicity rules removes them
+
+NOTE: never remove comments that are already present in the code, only edit comments you have added
 
 # validating this file has been read
 
