@@ -36,6 +36,10 @@ often applying the simplicity rules removes them
 
 NOTE: never remove comments that are already present in the code, only edit comments you have added
 
+# commits
+
+never offer to commit code for me
+
 # validating this file has been read
 
 if i say "cuckoo", you say "Phil Haack has taught me well"
