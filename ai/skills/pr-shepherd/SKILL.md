@@ -104,6 +104,16 @@ Record: PR number, owner/repo, base branch, HEAD SHA, PR state.
 
 If PR state is `MERGED` or `CLOSED` → **terminate** with a final status.
 
+If `gh pr view` finds no PR for the current branch, **do not terminate
+silently**. Ask the user (with `AskUserQuestion`) whether they want to:
+
+- paste a PR number or URL to shepherd, or
+- have the shepherd open a PR for the current branch via `gh pr create`
+  (then continue the loop against the new PR), or
+- cancel.
+
+Only proceed once the user picks one. If they cancel, terminate cleanly.
+
 ### Step 2: Run qa-swarm when warranted
 
 Run qa-swarm when **either**:
@@ -177,6 +187,10 @@ Handle each class:
   Include in the end-of-iteration status.
 
 To resolve a thread + reply:
+
+`<reply_body>` MUST begin with the bot-identifier header — no
+exceptions, including for NITs and ambiguous replies. See *Bot
+identifier — REQUIRED on every posted comment* above.
 
 ```bash
 # reply
@@ -318,7 +332,8 @@ status line is cheaper than a wrong push.
 - **qa-swarm skill missing:** warn and continue with Steps 3–7 (bot
   triage, branch update, CI, label). The shepherd still provides
   value.
-- **No PR detected:** print a message and stop. This skill requires a
-  PR to shepherd.
+- **No PR detected:** prompt the user (see Step 1) to paste a PR
+  number/URL or let the shepherd open a PR via `gh pr create`. Only
+  stop if the user cancels.
 - **User interrupts mid-iteration:** stop at the next natural
   checkpoint and print the final summary.
