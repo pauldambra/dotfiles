@@ -68,6 +68,10 @@ Examples:
 [shepherd] step 3 — found 4 qa-swarm threads: 1 actionable, 2 nit, 1 ambiguous
 [shepherd] step 3 — applying fix for thread #42 (rename foo → bar in src/foo.ts)
 [shepherd] step 5 — branch is BEHIND, restacking via graphite
+[shepherd] step 5 — restack hit conflicts in pnpm-lock.yaml, src/foo.ts; classifying
+[shepherd] step 5 — pnpm-lock.yaml trivial (regen), src/foo.ts non-overlapping — resolving
+[shepherd] step 5 — resolved 2 conflicts, continuing restack
+[shepherd] step 5 — conflict in src/auth.ts needs a decision (both sides edit getToken) — deferring
 [shepherd] step 6 — CI: 12 pending, 0 failing — will sleep 5m
 [shepherd] step 7 — CI green, applying stamphog label
 [shepherd] sleeping 300s; next iteration at <time>
@@ -229,11 +233,63 @@ gh pr view <pr_number> --json mergeable,mergeStateStatus
 If `mergeable == "CONFLICTING"` or `mergeStateStatus` in {`DIRTY`,
 `BEHIND`}:
 
-- Use the Graphite MCP to update/restack the branch onto its base.
-- If Graphite returns conflicts it cannot resolve automatically,
-  report them to the user and **terminate** — hand back control.
-- After a successful update, the HEAD SHA will have changed — carry on
-  to Step 6 with the new SHA.
+- Fetch and fast-forward the local trunk (base branch) first — do this
+  autonomously, no need to ask. Use the Graphite MCP where possible,
+  falling back to `git fetch origin <base>` + `git branch -f <base>
+  origin/<base>` (or `git checkout <base> && git pull --ff-only`).
+- Then use the Graphite MCP to update/restack the PR branch onto the
+  refreshed base.
+- On success, the HEAD SHA has changed — carry on to Step 6 with the
+  new SHA.
+- If Graphite reports conflicts it cannot resolve automatically, **try
+  to resolve them yourself** before handing back to the user. Do
+  **not** terminate on the first conflict — most conflicts with the
+  base branch are mechanical and safe to resolve autonomously.
+
+Conflict-resolution sub-workflow:
+
+1. List conflicted files (`git status --porcelain` — look for `UU`,
+   `AA`, `DU`, `UD`, `AU`, `UA`).
+2. Classify every conflicted file as **trivial** or
+   **needs-decision** using the rules below.
+3. If **every** conflict is trivial: resolve each in-place, `git add`
+   the resolved files, continue the restack (Graphite MCP's continue
+   step, or `git rebase --continue` as a fallback), then push. Carry
+   on to Step 6 with the new HEAD SHA.
+4. If **any** conflict is needs-decision: abort the restack cleanly
+   (`git rebase --abort` or the Graphite equivalent), surface the
+   file list with a one-line reason per file, and **terminate** —
+   hand back to the user.
+
+When in doubt, classify as needs-decision. A short pause is cheaper
+than a wrong merge.
+
+**Trivial** (resolve autonomously) — all of these qualify:
+
+- Lockfiles / generated files: `pnpm-lock.yaml`, `yarn.lock`,
+  `package-lock.json`, `Cargo.lock`, `poetry.lock`, `*.snap`,
+  generated schema or codegen output. Resolution: take the base side
+  and regenerate with the project's package manager / codegen
+  command, or accept the union if regeneration isn't available.
+- Non-overlapping edits inside the same hunk — both sides touched
+  different lines and only conflicted by textual proximity.
+  Resolution: keep both sets of edits, drop the conflict markers.
+- Pure import-order, formatting, or whitespace conflicts.
+  Resolution: union then let the project's formatter sort it.
+- Append-only lists (changelog / `whatsnew` entries, enum members,
+  feature-flag lists where both branches appended a new item).
+  Resolution: keep both entries.
+
+**Needs-decision** (defer to the user) — any one of these:
+
+- Both sides changed the same logical line(s) with different intent
+  (two renames of the same symbol to different names; two different
+  edits to the same conditional).
+- Resolution requires knowing which behaviour is desired (two
+  competing bug fixes, two different refactors of the same function).
+- The conflict spans a refactor boundary — e.g. a function moved on
+  one side and was edited on the other.
+- Any doubt at all — prefer deferring.
 
 ### Step 6: Check CI
 
@@ -289,7 +345,7 @@ Stop cleanly and print a final summary when **any** of:
 
 - PR is `MERGED` or `CLOSED`.
 - A CI check has failed.
-- Graphite cannot resolve a conflict.
+- A base-branch conflict needs a human decision (see Step 5 rules).
 - CI is green, `stamphog` already applied for current SHA, no new bot
   threads since last iteration, and the only remaining unresolved
   threads are in `deferred_threads` — nothing autonomous left to do.
