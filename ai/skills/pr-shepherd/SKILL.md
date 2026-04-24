@@ -92,6 +92,10 @@ fewer.
 - `deferred_threads` — set of review-thread IDs already surfaced to the
   user as needing their judgement. Skipped on subsequent iterations to
   avoid nagging.
+- `stamphog_dismissed_on_sha` — transient, re-derived every iteration
+  from the current PR comments. Set when stamphog has posted a
+  dismissal signal at the current HEAD (see Step 4). Not persisted
+  across iterations.
 
 ## Workflow — one iteration
 
@@ -224,6 +228,32 @@ comment's `author.__typename == "Bot"` **or** `author.login` ends with
 This covers stamphog/posthog-code, Claude review apps, Cursor bot,
 CodeRabbit, Dependabot comment threads, etc.
 
+#### Detect stamphog approval dismissal
+
+Stamphog removes its own approval and its `stamphog` label whenever
+new commits are pushed after a prior approval, and posts:
+
+> New commits pushed — stamphog approval dismissed. Re-apply the
+> stamphog label to request a re-review.
+
+This is a protocol signal, not a review thread to reply to or
+resolve. Scan **all three** surfaces where stamphog may post it:
+
+- top-level PR issue comments —
+  `gh api repos/<owner>/<repo>/issues/<pr_number>/comments`
+- dismissed review bodies —
+  `gh api repos/<owner>/<repo>/pulls/<pr_number>/reviews`,
+  looking for entries where `state == "DISMISSED"` from a bot author
+- inline review thread comments — already fetched by the GraphQL
+  query in Step 3
+
+Match any bot-authored comment body containing the phrase
+`stamphog approval dismissed`. On match, set the transient iteration
+flag `stamphog_dismissed_on_sha = HEAD_SHA` and log
+`[shepherd] step 4 — stamphog dismissal detected on <short_sha>`. Do
+**not** reply to or resolve the dismissal comment — Step 6.5 decides
+what to do about it.
+
 ### Step 5: Keep the branch current with its base
 
 ```bash
@@ -305,6 +335,38 @@ Classify:
   to Step 8 (sleep and loop) — do not apply `stamphog` yet.
 - All checks `bucket == "pass"` → Step 7.
 
+### Step 6.5: Handle stamphog dismissal before re-requesting review
+
+Only runs when `stamphog_dismissed_on_sha == HEAD_SHA` (detected in
+Step 4) and CI passed in Step 6.
+
+Decide automatically or prompt the user:
+
+- **Auto re-apply** when *all* of:
+  - `deferred_threads` is empty, and
+  - no unresolved actionable qa-swarm or bot threads remain on the
+    PR (i.e. every unresolved thread has been classified as NIT and
+    resolved, or was never actionable to begin with).
+
+  In that case clear `stamphog_applied_for_sha` (set it to `null`) so
+  Step 7 will re-apply the label. Narrate:
+  `[shepherd] step 6.5 — stamphog dismissal, clean state, re-requesting review`.
+
+- **Prompt the user** (via `AskUserQuestion`) whenever any
+  `deferred_threads` are still open. The human deferred those
+  deliberately — re-requesting review now would ignore their
+  judgement. Offer two choices:
+  1. re-apply `stamphog` now anyway (clear
+     `stamphog_applied_for_sha` and fall through to Step 7),
+  2. leave it dismissed and **terminate** so the human can handle
+     the deferred threads first.
+
+  Narrate:
+  `[shepherd] step 6.5 — stamphog dismissal with <n> deferred threads, asking user`.
+
+If `stamphog_dismissed_on_sha` is unset, skip this step entirely and
+fall through to Step 7.
+
 ### Step 7: Apply `stamphog` once per SHA
 
 Only if `stamphog_applied_for_sha != HEAD_SHA`:
@@ -325,7 +387,7 @@ Print a one-line **summary** of the iteration (on top of the per-step
 narration from earlier):
 
 ```
-[shepherd] iter done — sha=<short_sha> qa-swarm=<ran|skip> resolved=<n> actioned=<n> deferred=<n> ci=<pass|pending|fail> stamphog=<applied|already|waiting>
+[shepherd] iter done — sha=<short_sha> qa-swarm=<ran|skip> resolved=<n> actioned=<n> deferred=<n> ci=<pass|pending|fail> stamphog=<applied|already|waiting|dismissed|re-requested>
 ```
 
 If there are deferred threads, print their file:line and one-line
