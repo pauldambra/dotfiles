@@ -455,3 +455,25 @@ status line is cheaper than a wrong push.
   stop if the user cancels.
 - **User interrupts mid-iteration:** stop at the next natural
   checkpoint and print the final summary.
+
+## Pitfalls observed in the wild
+
+Real things that have gone wrong while running this loop. When you hit
+one of these, recognise the pattern and apply the fix below rather than
+retrying blindly or terminating.
+
+### Posting fixes via Graphite — `gt submit` "trunk branch is out of date"
+
+After amending a commit on a stacked branch, `gt submit
+--no-interactive --no-edit --publish` can refuse with an error along
+the lines of *"trunk branch is out of date"*. Two paths forward:
+
+1. Run the Graphite MCP "sync trunk" / "restack" cycle first, then
+   retry `gt submit`.
+2. If you only need to push the head ref of the current branch and
+   nothing else in the stack has shifted, fall back to a direct
+   `git push origin <branch>` — it preserves the remote ref without
+   requiring trunk to be current locally.
+
+Don't loop on `gt submit` retries — they will keep failing for the same
+reason. Choose one of the two paths above and move on.
