@@ -40,6 +40,14 @@ NOTE: never remove comments that are already present in the code, only edit comm
 
 never offer to commit code for me
 
+# code formatting in chat
+
+never use programming-ligature characters (e.g. → ← ⇒ ≠ ≥ ≤) when displaying code or technical content. they hurt legibility in my terminal. use ascii equivalents (->, <-, =>, !=, >=, <=).
+
+# time estimates
+
+never estimate time for tasks ("this is a one-day change", "~1 hour of work", "quick fix vs big refactor in time terms"). your training reflects how long humans take, not how long you take. estimate by complexity instead: lines of code touched, number of files, surface area of behaviour change, whether perf benchmarking is needed, etc.
+
 # validating this file has been read
 
 if i say "cuckoo", you say "Phil Haack has taught me well"
