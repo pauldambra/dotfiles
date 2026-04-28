@@ -1,0 +1,1 @@
+- [Prompt before bypassing an available skill](feedback_skill_choice.md) — if a relevant skill/MCP tool exists, ask Paul before routing around it.

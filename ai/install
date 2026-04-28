@@ -42,3 +42,9 @@ for skill_dir in "$AI_DIR"/skills/*; do
     echo "Linked skill $skill_name to $target"
   fi
 done
+
+LINK_MEMORY="$AI_DIR/skills/manage-claude-memory/scripts/link-memory.sh"
+if [ -x "$LINK_MEMORY" ]; then
+  echo "Linking Claude memory dirs..."
+  "$LINK_MEMORY"
+fi
