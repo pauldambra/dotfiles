@@ -3,21 +3,28 @@ name: pr-shepherd
 description: >
   Shepherds a PR through the repetitive loop: run qa-swarm when there are
   substantive changes, triage qa-swarm findings, triage AI/bot review
-  comments, keep the branch current with its base, watch CI, and apply the
-  `stamphog` label once green. Use when the user says "/pr-shepherd",
+  comments, keep the branch current with its base, report CI state, and
+  apply the `stamphog` label whenever the actionable-thread state is
+  clean (independent of CI). Use when the user says "/pr-shepherd",
   "shepherd this PR", "babysit this PR", or wants the whole review loop
   driven automatically. Accepts an optional PR number or URL as argument.
 ---
 
 # PR Shepherd
 
-Drives a PR through the review loop autonomously. Runs qa-swarm, triages
-qa-swarm and bot review comments, keeps the branch current, watches CI,
-and applies `stamphog` once green — then polls for the automated review
-and loops again. Defers anything ambiguous to the user.
+Drives a PR through the review loop. Runs qa-swarm, triages qa-swarm
+and bot review comments, keeps the branch current, watches CI, and
+applies `stamphog` whenever the actionable-thread state is clean —
+then re-triages the bot's response on the next iteration. Defers
+anything ambiguous to the user.
 
-The skill owns an **internal poll loop**. One invocation shepherds the PR
-until a terminal condition. It carries state in memory across iterations
+**One invocation = one iteration.** The skill does not sleep or
+self-loop in practice — the model exits after a single pass. For
+hands-off cadence, run it under the `loop` skill (e.g.
+`/loop 5m /pr-shepherd <pr>`). For ad-hoc nudges, re-invoke manually.
+State is carried between invocations via `$ARGUMENTS` or via the
+surrounding conversation when iterations run back-to-back inside one
+Claude session.
 
 ## Bot identifier — REQUIRED on every posted comment
 
@@ -47,7 +54,7 @@ Example reply when posting a fix:
 > [!NOTE]
 > 🤖 Automated comment by **PR Shepherd** — not written by a human
 
-Fixed in `abc1234` — renamed `foo` → `bar` in `src/foo.ts`.
+Fixed in `abc1234` — renamed `foo` to `bar` in `src/foo.ts`.
 ```
 
 ## Narration — keep the user in the loop
@@ -66,24 +73,34 @@ Examples:
 [shepherd] step 2 — diff since a1b2c3d touches src/foo.ts, running qa-swarm
 [shepherd] step 2 — skip qa-swarm, only doc-only changes since a1b2c3d
 [shepherd] step 3 — found 4 qa-swarm threads: 1 actionable, 2 nit, 1 ambiguous
-[shepherd] step 3 — applying fix for thread #42 (rename foo → bar in src/foo.ts)
+[shepherd] step 3 — applying fix for thread #42 (rename foo to bar in src/foo.ts)
 [shepherd] step 5 — branch is BEHIND, restacking via graphite
 [shepherd] step 5 — restack hit conflicts in pnpm-lock.yaml, src/foo.ts; classifying
 [shepherd] step 5 — pnpm-lock.yaml trivial (regen), src/foo.ts non-overlapping — resolving
 [shepherd] step 5 — resolved 2 conflicts, continuing restack
 [shepherd] step 5 — conflict in src/auth.ts needs a decision (both sides edit getToken) — deferring
-[shepherd] step 6 — CI: 12 pending, 0 failing — will sleep 5m
-[shepherd] step 7 — CI green, applying stamphog label
-[shepherd] sleeping 300s; next iteration at <time>
+[shepherd] step 6 — CI: 8 pass, 4 pending, 0 fail — recording in summary
+[shepherd] step 7 — applying stamphog label (independent of CI state)
+[shepherd] iter done — handing back; re-invoke or let /loop drive the next pass
 ```
 
 Also narrate mid-step when a sub-action could take more than a few
 seconds (qa-swarm invocation, graphite restack, pushing a fix). A silent
 30+ second gap is the failure mode — err on the side of more lines, not
 fewer.
-— GitHub itself is the source of truth so the loop is restartable.
 
-## State carried across iterations
+GitHub itself is the source of truth so the loop is restartable across
+invocations.
+
+## State carried between invocations
+
+State is **not** stored on disk. It is passed via `$ARGUMENTS` on
+re-invocation, or carried in the surrounding conversation when
+iterations run back-to-back inside one Claude session. When taking
+over from a previous iteration, expect the previous values to be
+quoted in the invocation or visible in the recent conversation; when
+finishing an iteration, print the values so the next caller can
+re-supply them.
 
 - `qa_swarm_marker_sha` — HEAD SHA the last time qa-swarm ran. `null`
   initially.
@@ -93,8 +110,8 @@ fewer.
   user as needing their judgement. Skipped on subsequent iterations to
   avoid nagging.
 - `stamphog_dismissed_on_sha` — transient, re-derived every iteration
-  from the current PR comments. Set when stamphog has posted a
-  dismissal signal at the current HEAD (see Step 4). Not persisted
+  from the current PR state (comments and labels — see Step 4). Set
+  when stamphog has dismissed at the current HEAD. Not persisted
   across iterations.
 
 ## Workflow — one iteration
@@ -110,7 +127,7 @@ gh repo view --json owner,name
 
 Record: PR number, owner/repo, base branch, HEAD SHA, PR state.
 
-If PR state is `MERGED` or `CLOSED` → **terminate** with a final status.
+If PR state is `MERGED` or `CLOSED`, **terminate** with a final status.
 
 If `gh pr view` finds no PR for the current branch, **do not terminate
 silently**. Ask the user (with `AskUserQuestion`) whether they want to:
@@ -127,7 +144,7 @@ Only proceed once the user picks one. If they cancel, terminate cleanly.
 Run qa-swarm when **either**:
 
 - `qa_swarm_marker_sha` is `null` (first iteration), **or**
-- HEAD SHA ≠ `qa_swarm_marker_sha` **and** the diff
+- HEAD SHA != `qa_swarm_marker_sha` **and** the diff
   `qa_swarm_marker_sha..HEAD` touches at least one non-doc file (i.e.
   something other than `*.md`, `*.txt`, or pure whitespace changes).
 
@@ -137,6 +154,13 @@ handles diff gathering and comment posting. After it completes set
 
 If skipping qa-swarm, log `qa-swarm: skip (no substantive changes since
 <sha>)`.
+
+The non-doc-files rule is firm. If you want to skip qa-swarm despite
+qualifying changes (e.g. you believe the new commits only address
+prior qa-swarm findings, or the run would be pure churn), use
+`AskUserQuestion` to confirm before skipping. Do not silently
+override -- a quiet skip hides judgement calls the user may want to
+challenge. "Review fatigue" alone is not sufficient grounds.
 
 ### Step 3: Triage qa-swarm review threads
 
@@ -218,6 +242,12 @@ gh api graphql -f query='
   }' -F thread_id=<id>
 ```
 
+**Ambiguous threads never cause termination.** They are added to
+`deferred_threads` and surfaced in the iteration summary. The loop
+continues so CI watching, branch-currency, and stamphog management
+keep running while the user decides on the architectural questions
+in their own time.
+
 ### Step 4: Triage bot review threads
 
 Same procedure as Step 3, but for unresolved threads where the first
@@ -228,6 +258,24 @@ comment's `author.__typename == "Bot"` **or** `author.login` ends with
 This covers stamphog/posthog-code, Claude review apps, Cursor bot,
 CodeRabbit, Dependabot comment threads, etc.
 
+#### Skip stale bot reviews
+
+Before classifying a bot review as actionable, check whether it is
+against the current HEAD:
+
+- inline review thread comments -- already filtered by
+  `isOutdated=false` in the GraphQL query.
+- top-level PR comments (e.g. Greptile review summaries) -- scan the
+  body for a commit SHA reference. Common patterns: "reviewing commit
+  `<sha>`", "in `<sha>`", or a GitHub commit link of the form
+  `/commit/<sha>`. If a referenced SHA is present and != HEAD_SHA,
+  skip the comment as stale. The bot will re-evaluate the new HEAD
+  shortly.
+
+When in doubt (no SHA reference but the review predates the latest
+commit by more than one push), prefer skipping to acting -- a stale
+fix is worse than a small wait.
+
 #### Detect stamphog approval dismissal
 
 Stamphog removes its own approval and its `stamphog` label whenever
@@ -237,7 +285,7 @@ new commits are pushed after a prior approval, and posts:
 > stamphog label to request a re-review.
 
 This is a protocol signal, not a review thread to reply to or
-resolve. Scan **all three** surfaces where stamphog may post it:
+resolve. Scan **all four** surfaces where stamphog may signal it:
 
 - top-level PR issue comments —
   `gh api repos/<owner>/<repo>/issues/<pr_number>/comments`
@@ -246,13 +294,22 @@ resolve. Scan **all three** surfaces where stamphog may post it:
   looking for entries where `state == "DISMISSED"` from a bot author
 - inline review thread comments — already fetched by the GraphQL
   query in Step 3
+- current PR labels —
+  `gh pr view <pr_number> --json labels`. Treat the dismissal as
+  detected when `stamphog_applied_for_sha == HEAD_SHA` but `stamphog`
+  is **not** in the returned labels. This catches the silent-removal
+  case where stamphog's verdict is unchanged from a previous explicit
+  dismissal (e.g. a hard size gate) and the label disappears without
+  a new comment.
 
 Match any bot-authored comment body containing the phrase
-`stamphog approval dismissed`. On match, set the transient iteration
-flag `stamphog_dismissed_on_sha = HEAD_SHA` and log
-`[shepherd] step 4 — stamphog dismissal detected on <short_sha>`. Do
-**not** reply to or resolve the dismissal comment — Step 6.5 decides
-what to do about it.
+`stamphog approval dismissed`, **or** the silent-removal condition
+above. On match, set the transient iteration flag
+`stamphog_dismissed_on_sha = HEAD_SHA` and log
+`[shepherd] step 4 — stamphog dismissal detected on <short_sha>`
+(append `(silent label removal)` when the label-state surface
+triggered it). Do **not** reply to or resolve the dismissal comment —
+Step 6.5 decides what to do about it.
 
 ### Step 5: Keep the branch current with its base
 
@@ -321,24 +378,31 @@ than a wrong merge.
   one side and was edited on the other.
 - Any doubt at all — prefer deferring.
 
-### Step 6: Check CI
+### Step 6: Check CI (report only, never gate)
 
 ```bash
 gh pr checks <pr_number> --json name,state,bucket,link
 ```
 
-Classify:
+Count buckets and record them for the iteration summary:
 
-- Any check with `bucket == "fail"` → **terminate**. Print failing
-  check names + links so the user can fix.
-- Any check with `bucket == "pending"` (queued/running) → fall through
-  to Step 8 (sleep and loop) — do not apply `stamphog` yet.
-- All checks `bucket == "pass"` → Step 7.
+- `bucket == "pass"` count
+- `bucket == "pending"` count
+- `bucket == "fail"` count + names + links
+
+CI state does **not** gate `stamphog`. Stamphog re-reviews on every
+push and runs its own evaluation in parallel — there is no value in
+waiting for CI to go green before applying the label. A CI failure
+is also not a terminal condition for this loop; it gets surfaced in
+the summary and the user decides whether to fix it. The shepherd's
+job is review-loop management, not CI custody.
+
+Fall through to Step 6.5.
 
 ### Step 6.5: Handle stamphog dismissal before re-requesting review
 
 Only runs when `stamphog_dismissed_on_sha == HEAD_SHA` (detected in
-Step 4) and CI passed in Step 6.
+Step 4).
 
 Decide automatically or prompt the user:
 
@@ -375,43 +439,57 @@ Only if `stamphog_applied_for_sha != HEAD_SHA`:
 gh pr edit <pr_number> --add-label stamphog
 ```
 
-Then set `stamphog_applied_for_sha = HEAD_SHA`. Fall through to Step 8;
-the stamphog review will appear as new bot comments on the next
-iteration's Step 4.
+Then set `stamphog_applied_for_sha = HEAD_SHA`. The stamphog review
+will appear as new bot comments on the next iteration's Step 4.
 
 If `stamphog_applied_for_sha == HEAD_SHA`, skip — already stamped.
 
-### Step 8: Iteration summary, sleep, loop
+This step is intentionally independent of CI state. Stamphog evaluates
+in parallel; there is no benefit to waiting.
+
+### Step 8: Iteration summary and hand-back
 
 Print a one-line **summary** of the iteration (on top of the per-step
 narration from earlier):
 
 ```
-[shepherd] iter done — sha=<short_sha> qa-swarm=<ran|skip> resolved=<n> actioned=<n> deferred=<n> ci=<pass|pending|fail> stamphog=<applied|already|waiting|dismissed|re-requested>
+[shepherd] iter done — sha=<short_sha> qa-swarm=<ran|skip> resolved=<n> actioned=<n> deferred=<n> ci=<pass=N pending=N fail=N> stamphog=<applied|already|waiting|dismissed|re-requested>
 ```
 
 If there are deferred threads, print their file:line and one-line
-reason under the status line.
+reason under the status line. If any CI checks are failing, print
+their names + links on a separate line (informational — not a
+termination).
 
-Then sleep and loop:
+Then print the four state values so the next caller (the user, or
+the `loop` skill) can re-supply them:
 
-- If CI is pending → `sleep 300` (5 min).
-- If waiting on stamphog bot review to appear → `sleep 180`.
-- Otherwise → `sleep 120`.
+```
+[shepherd] state — qa_swarm_marker_sha=<sha|null> stamphog_applied_for_sha=<sha|null> deferred_threads=[<id>,...] stamphog_dismissed_on_sha=<sha|null>
+```
 
-Loop back to Step 1.
+Hand back to the runner. The skill does not sleep or self-loop. For
+hands-off cadence wrap this skill in `/loop` (e.g.
+`/loop 5m /pr-shepherd <pr>`); otherwise re-invoke manually when ready
+for the next iteration.
 
 ## Terminal conditions (stop the loop)
 
 Stop cleanly and print a final summary when **any** of:
 
 - PR is `MERGED` or `CLOSED`.
-- A CI check has failed.
 - A base-branch conflict needs a human decision (see Step 5 rules).
-- CI is green, `stamphog` already applied for current SHA, no new bot
-  threads since last iteration, and the only remaining unresolved
-  threads are in `deferred_threads` — nothing autonomous left to do.
+- `stamphog` is already applied for the current SHA, no new bot
+  threads have appeared since the last iteration, and the only
+  remaining unresolved threads are in `deferred_threads` — nothing
+  autonomous left to do (CI state, pass or fail, does not factor in).
 - The user interrupts.
+
+CI failures are **not** a terminal condition. They are reported in
+the iteration summary and the loop continues — the user decides
+whether to investigate. Likewise, ambiguous review findings are
+**not** a terminal condition; they go to `deferred_threads` and the
+loop keeps polling.
 
 The final summary lists:
 
