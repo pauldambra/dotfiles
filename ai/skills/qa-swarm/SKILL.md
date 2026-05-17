@@ -1,15 +1,16 @@
 ---
 name: qa-swarm
 description: >
-  Orchestrates three review skills (qa-team, paul-reviewer, xp-reviewer) into a
-  single comprehensive PR review with inline GitHub comments. Use when the user
-  asks for "qa-swarm", "swarm review", or wants a full multi-perspective review
-  posted to their PR. Accepts an optional PR number or base branch as argument.
+  Orchestrates four review skills (qa-team, paul-reviewer, xp-reviewer,
+  security-audit) into a single comprehensive PR review with inline GitHub
+  comments. Use when the user asks for "qa-swarm", "swarm review", or wants a
+  full multi-perspective review posted to their PR. Accepts an optional PR
+  number or base branch as argument.
 ---
 
 # QA Swarm: Multi-Perspective PR Review
 
-Runs three independent review perspectives in parallel and posts findings as
+Runs four independent review perspectives in parallel and posts findings as
 inline PR comments. Each reviewer operates independently — none knows about
 the others.
 
@@ -59,8 +60,12 @@ branch, changed file list, full diff, commit log, and HEAD SHA.
 
 ### Step 2: Load skill content
 
-Read the following files. If any skill's files are missing, warn the user and
-skip that reviewer — the others still run.
+Load the four reviewer bodies. The first three live on disk; the fourth lives
+in the PostHog skills store and is fetched via MCP. If any reviewer's content
+is unavailable, warn the user and skip that reviewer — the others still run.
+
+Issue all four loads in **parallel** (single message, four tool calls) so the
+MCP round-trip does not serialize with the on-disk reads.
 
 **qa-team** (try these paths in order, stop at first hit):
 1. `<repo_root>/.agents/skills/qa-team/SKILL.md` (use `git rev-parse --show-toplevel`)
@@ -78,7 +83,21 @@ If found, also read from the same directory:
 - `~/.claude/skills/xp-reviewer/SKILL.md`
 - `~/.claude/skills/xp-reviewer/c2wiki-wisdom.md`
 
-### Step 3: Launch 3 review agents in parallel
+**security-audit** (PostHog MCP — network-dependent, more likely to fail than
+the on-disk reads above):
+
+Invoke the PostHog MCP `exec` tool:
+
+```
+mcp__posthog__exec command="call llma-skill-get {\"skill_name\": \"security-audit\"}"
+```
+
+The response's `body` field is the full skill markdown. Store it as
+`security_audit_body`. If the call errors, times out, or the MCP server is
+unavailable, log `security-audit: skip (MCP unavailable)` and continue with
+the other three reviewers.
+
+### Step 3: Launch 4 review agents in parallel
 
 Launch ALL agents in a **single message** with multiple Agent tool calls so
 they run in true parallel.
@@ -109,6 +128,58 @@ Pass the full xp-reviewer SKILL.md content and c2wiki-wisdom into the agent
 prompt, along with the diff. Tell it to review the diff in the XP voice and
 return structured findings with `reviewer: xp`.
 
+#### Agent 4: security-audit
+
+Skip this agent if `security_audit_body` is unset (MCP fetch failed in
+Step 2).
+
+Pass `security_audit_body` into the agent prompt along with the diff and the
+following framing. The body is written for a standalone audit session — the
+prompt must override the sections that do not apply in a qa-swarm context:
+
+- **Suppress the "Input" section.** The diff, base branch, PR ref, and HEAD
+  SHA are already gathered in Step 1. Tell the agent: "Do not run `git diff`
+  or `gh pr diff` — your target is the diff supplied below."
+- **Suppress the "Before you start" clarifying questions.** Tell the agent:
+  "Do not ask clarifying questions. If authentication, tenant derivation, or
+  reachability is unclear from the diff, state your assumption inline in the
+  finding's `Confidence` line and proceed."
+- **Suppress the "After reporting" interactive fix loop.** Tell the agent:
+  "Do not offer to fix findings. qa-swarm is the orchestrator — your output
+  becomes PR comments. End your response immediately after the structured
+  findings block."
+- **Suppress the "Reproducer tests" section.** Tell the agent: "Do not write
+  reproducer tests. This is a PR-review context, not a local-branch audit."
+
+Tell the agent to return findings in qa-swarm's `STRUCTURED_FINDINGS` format
+(see "Agent output format" below) with these mappings:
+
+- `reviewer:` tag is `security-audit/<category>` where `<category>` is the
+  finding's lowercased, hyphenated `Category` field (e.g.
+  `security-audit/idor`, `security-audit/ssrf`,
+  `security-audit/sql-injection`, `security-audit/prompt-injection`). Fall
+  back to a flat `security-audit` when `Category` is missing. Sub-tagging
+  preserves the audit's taxonomy in inline-comment headers and makes the
+  convergent template (`qa-team/security` + `security-audit/idor`) more
+  readable than two flat tags would be.
+- `severity:` maps directly: Critical -> CRITICAL, High -> HIGH,
+  Medium -> MEDIUM, Low -> LOW. security-audit has no NIT tier; never emit
+  NIT from this agent.
+- `file:` and `line:` come from the finding's `Location` field
+  (`file.py:LINE`). If `Location` lists multiple refs, use the primary
+  location and surface the additional refs inside `body`.
+- `body:` is a compact rendering of the native `## Finding N` block,
+  preserving exactly these fields in this order: Description, Data flow,
+  Exploit, Fix, Confidence. Drop the `## Finding N — <title>` header,
+  Severity, Category, and Location lines — they are already encoded in the
+  inline-comment chrome (tag, severity emoji, file/line anchor). Keep the
+  field labels (`Description:`, `Data flow:`, `Exploit:`, `Fix:`,
+  `Confidence:`) so the audit's structured shape survives into the PR
+  comment.
+
+If the agent has no findings, return the `(none)` form described in the
+"Agent output format" section below.
+
 #### Agent output format
 
 Every agent must end its response with findings in this exact format:
@@ -135,7 +206,7 @@ OVERALL_SUMMARY:
 
 ### Step 4: Synthesize
 
-Collect all findings from the three agents.
+Collect all findings from the four agents.
 
 **Deduplication:** If multiple reviewers flagged the same file+line (within 5
 lines) or clearly the same concern, merge them into a single finding. Note the
@@ -218,7 +289,7 @@ gh pr comment {pr_number} --body "$(cat <<'EOF'
 > [!NOTE]
 > 🤖 Automated comment by **QA Swarm** — not written by a human
 >
-> Multi-perspective review: qa-team (specialists + generalists), paul-reviewer, xp-reviewer
+> Multi-perspective review: qa-team (specialists + generalists), paul-reviewer, xp-reviewer, security-audit
 
 ## Verdict: <emoji> <VERDICT>
 
@@ -239,6 +310,7 @@ gh pr comment {pr_number} --body "$(cat <<'EOF'
 | 🔍 qa-team | <1 sentence> |
 | 👤 paul | <1 sentence> |
 | 📐 xp | <1 sentence> |
+| 🛡 security-audit | <1 sentence> |
 
 ---
 *Automated by QA Swarm — not a human review*
@@ -248,8 +320,13 @@ EOF
 
 ### Graceful degradation
 
-- **qa-team files not found:** Skip qa-team agent. Warn user. Run paul + xp only.
-- **paul-reviewer not found:** Skip paul agent. Warn user. Run qa-team + xp only.
-- **xp-reviewer not found:** Skip xp agent. Warn user. Run qa-team + paul only.
+- **qa-team files not found:** Skip qa-team agent. Warn user. Run the other three.
+- **paul-reviewer not found:** Skip paul agent. Warn user. Run the other three.
+- **xp-reviewer not found:** Skip xp agent. Warn user. Run the other three.
+- **security-audit not found / PostHog MCP unavailable:** Skip security-audit
+  agent. Warn user (`security-audit: skip (MCP unavailable)`). Run the other
+  three. This case is more likely than the on-disk skips above because it
+  depends on a network call to the PostHog MCP server — treat it as the
+  expected fallback when running offline or against a degraded MCP endpoint.
 - **No PR detected:** Run all reviews, output report to terminal only. Offer to post if user provides a PR number.
 - **Only one reviewer available:** Still run it and post findings. Better than nothing.
