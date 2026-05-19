@@ -9,3 +9,10 @@
 - [feedback_check_pr_draft_state.md](feedback_check_pr_draft_state.md) - PR Approval Agent silently skips on draft PRs; check isDraft before adding stamphog label
 - [feedback_always_parameterise_tests.md](feedback_always_parameterise_tests.md) - Always parameterise tests when there are multiple cases of the same shape (jest describe.each, pytest parameterized, Go table-driven)
 - [feedback_prefer_listeners_over_subscriptions.md](feedback_prefer_listeners_over_subscriptions.md) - In kea logics, prefer listeners (or afterMount + propsChanged) over kea-subscriptions — they're slower
+- [feedback_prefer_assert_over_assertequal.md](feedback_prefer_assert_over_assertequal.md) - Prefer plain `assert x == y` over `self.assertEqual` in Python tests for richer pytest failure output
+- [feedback_pr_shepherd_mark_ready.md](feedback_pr_shepherd_mark_ready.md) - When running pr-shepherd, auto-mark draft PRs ready for review before starting the loop
+- [feedback_leak_hunting_offheap.md](feedback_leak_hunting_offheap.md) - Leak hunting targets off-heap memory (detached DOM, native allocations) not JS heap; use measureUserAgentSpecificMemory or CDP, not performance.memory
+- [feedback_no_absolute_counts_in_public_prs.md](feedback_no_absolute_counts_in_public_prs.md) - PostHog/posthog PRs/commits must justify with percentages or ratios, never absolute production counts (users, events, revenue)
+
+## Project
+- [project_user_interviews_embedding_access.md](project_user_interviews_embedding_access.md) - user_interviews transcripts in document_embeddings: team_id is the only enforced isolation; HogQL-readable under query:read is accepted
