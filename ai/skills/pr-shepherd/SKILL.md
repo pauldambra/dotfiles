@@ -164,7 +164,13 @@ challenge. "Review fatigue" alone is not sufficient grounds.
 
 ### Step 3: Triage qa-swarm review threads
 
-Fetch all review threads on the PR:
+Fetch all review threads on the PR. Filter to unresolved, non-outdated
+threads and trim each body to 4 KB at the jq layer — bot reviews
+(qa-swarm, claude review apps, coderabbit) can be tens of KB each, and
+fetching the full payload every poll is the single biggest context
+cost of this loop. The 4 KB head is enough to classify; refetch the
+full body only for the one thread you're about to action (see
+*Refetch full body before acting* below).
 
 ```bash
 gh api graphql -f query='
@@ -189,12 +195,27 @@ gh api graphql -f query='
         }
       }
     }
-  }' -F owner=<owner> -F repo=<repo> -F num=<pr_number>
+  }' -F owner=<owner> -F repo=<repo> -F num=<pr_number> \
+  | jq '[
+      .data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.isResolved == false and .isOutdated == false)
+      | {
+          id,
+          path: .comments.nodes[0].path,
+          line: .comments.nodes[0].line,
+          author_login: .comments.nodes[0].author.login,
+          author_type: .comments.nodes[0].author.__typename,
+          first_comment_id: .comments.nodes[0].databaseId,
+          body_head: (.comments.nodes[0].body[:4000]),
+          body_truncated: ((.comments.nodes[0].body | length) > 4000),
+          reply_count: ((.comments.nodes | length) - 1)
+        }
+    ]'
 ```
 
-For each thread where `isResolved=false`, `isOutdated=false`, the first
-comment's body contains `🤖 Automated comment by **QA Swarm**`, and
-thread id is not in `deferred_threads`:
+For each returned thread where `body_head` contains
+`🤖 Automated comment by **QA Swarm**` and thread id is not in
+`deferred_threads`:
 
 Classify the thread body:
 
@@ -211,7 +232,9 @@ Handle each class:
 - **Actionable:** apply the edit with `Edit`/`Write`, stage via Graphite
   MCP, commit with a message like `fix: address qa-swarm <short
   description>`, push via Graphite MCP, then resolve the thread and
-  leave a short reply noting the commit SHA.
+  leave a short reply noting the commit SHA. If `body_truncated == true`
+  for this thread, refetch the full body first (see *Refetch full body
+  before acting* below) so the fix isn't based on a clipped suggestion.
 - **NIT:** resolve the thread with a one-line reply explaining why
   ("intentional — <reason>" / "out of scope — follow-up" / "disagree
   — <reason>").
@@ -240,6 +263,23 @@ gh api graphql -f query='
       thread { id }
     }
   }' -F thread_id=<id>
+```
+
+#### Refetch full body before acting
+
+If you've classified a truncated thread as **Actionable**, refetch its
+full body before generating the fix. This is the only path that should
+pull a full body into context — and only for one thread at a time:
+
+```bash
+gh api graphql -f query='
+  query($id:ID!) {
+    node(id:$id) {
+      ... on PullRequestReviewThread {
+        comments(first:1) { nodes { body } }
+      }
+    }
+  }' -F id=<thread_id>
 ```
 
 **Ambiguous threads never cause termination.** They are added to
@@ -285,26 +325,39 @@ new commits are pushed after a prior approval, and posts:
 > stamphog label to request a re-review.
 
 This is a protocol signal, not a review thread to reply to or
-resolve. Scan **all four** surfaces where stamphog may signal it:
+resolve. Scan **all four** surfaces where stamphog may signal it.
+For the first two, pipe each fetch through jq so only a boolean
+lands in context — the raw issue comments and reviews payloads on a
+busy PR can be tens of KB and we only need to know whether the
+phrase is present.
 
-- top-level PR issue comments —
-  `gh api repos/<owner>/<repo>/issues/<pr_number>/comments`
-- dismissed review bodies —
-  `gh api repos/<owner>/<repo>/pulls/<pr_number>/reviews`,
-  looking for entries where `state == "DISMISSED"` from a bot author
-- inline review thread comments — already fetched by the GraphQL
-  query in Step 3
-- current PR labels —
-  `gh pr view <pr_number> --json labels`. Treat the dismissal as
-  detected when `stamphog_applied_for_sha == HEAD_SHA` but `stamphog`
-  is **not** in the returned labels. This catches the silent-removal
-  case where stamphog's verdict is unchanged from a previous explicit
-  dismissal (e.g. a hard size gate) and the label disappears without
-  a new comment.
+Top-level PR issue comments:
 
-Match any bot-authored comment body containing the phrase
-`stamphog approval dismissed`, **or** the silent-removal condition
-above. On match, set the transient iteration flag
+```bash
+gh api repos/<owner>/<repo>/issues/<pr_number>/comments \
+  | jq 'any(.[]; (.user.type == "Bot") and ((.body // "") | contains("stamphog approval dismissed")))'
+```
+
+Dismissed review bodies:
+
+```bash
+gh api repos/<owner>/<repo>/pulls/<pr_number>/reviews \
+  | jq 'any(.[]; (.state == "DISMISSED") and ((.body // "") | contains("stamphog approval dismissed")))'
+```
+
+Inline review thread comments — already covered by the Step 3 fetch.
+Scan `body_head` of each thread for the same phrase.
+
+Current PR labels —
+`gh pr view <pr_number> --json labels`. Treat the dismissal as
+detected when `stamphog_applied_for_sha == HEAD_SHA` but `stamphog`
+is **not** in the returned labels. This catches the silent-removal
+case where stamphog's verdict is unchanged from a previous explicit
+dismissal (e.g. a hard size gate) and the label disappears without
+a new comment.
+
+If any of the four returns `true` (or the silent-removal condition
+above is met), set the transient iteration flag
 `stamphog_dismissed_on_sha = HEAD_SHA` and log
 `[shepherd] step 4 — stamphog dismissal detected on <short_sha>`
 (append `(silent label removal)` when the label-state surface
@@ -518,7 +571,10 @@ status line is cheaper than a wrong push.
 
 ## Dependencies
 
-- `Skill("qa-swarm")` — ships alongside this skill.
+- `Skill("qa-swarm")` — orchestrates the four review agents (qa-team,
+  paul-reviewer, xp-reviewer, security-audit). qa-swarm itself owns
+  loading each reviewer's body from disk or from the PostHog skill
+  store as appropriate.
 - `gh` CLI (repo, pr, api, label commands).
 - Graphite MCP for git operations (commit/push/restack). Fall back to
   `gh`/`git` only when Graphite doesn't cover a case.
