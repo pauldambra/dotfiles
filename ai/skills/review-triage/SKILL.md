@@ -123,9 +123,12 @@ Run qa-swarm when **either**:
   `qa_swarm_marker_sha..HEAD` touches at least one non-doc file (i.e.
   something other than `*.md`, `*.txt`, or pure whitespace changes).
 
-Invoke via `Skill("qa-swarm", args="<pr_number>")` so the existing skill handles
-diff gathering and comment posting. After it completes set `qa_swarm_marker_sha
-= HEAD_SHA`.
+Invoke qa-swarm, resolved local-first then from the store so this works for
+anyone: run `Skill("qa-swarm", args="<pr_number>")` if it's installed locally;
+otherwise fetch its body from the PostHog skill store (`mcp__posthog__exec
+command='call llma-skill-get {"skill_name":"qa-swarm"}'`) and follow it inline to
+gather the diff and post the four-reviewer findings. After it completes set
+`qa_swarm_marker_sha = HEAD_SHA`.
 
 If skipping qa-swarm, log `qa-swarm: skip (no substantive changes since <sha>)`.
 
@@ -361,10 +364,11 @@ Ambiguous review findings are **not** a terminal condition; they go to
 
 ## Dependencies
 
-- `Skill("qa-swarm")` — orchestrates the four review agents (qa-team,
-  paul-reviewer, xp-reviewer, security-audit). qa-swarm itself owns loading each
-  reviewer's body from disk or from the PostHog skill store as appropriate.
-  (Standalone only; as a `pr-shepherd` sub-step the orchestrator runs qa-swarm.)
+- **`qa-swarm`** — orchestrates the four review agents (qa-team, paul-reviewer,
+  xp-reviewer, security-audit), resolved local-first then from the PostHog skill
+  store: run `Skill("qa-swarm")` if installed, else `llma-skill-get` its body and
+  follow it inline. qa-swarm itself owns loading each reviewer's body. (Standalone
+  only; as a `pr-shepherd` sub-step the orchestrator runs qa-swarm.)
 - `gh` CLI (repo, pr, api commands).
 - Graphite MCP for git operations (commit/push for fixes). Fall back to
   `gh`/`git` only when Graphite doesn't cover a case.
