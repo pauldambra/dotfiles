@@ -2,9 +2,10 @@
 name: review-triage
 description: >
   Triages the review conversation on a PR: runs qa-swarm when there are
-  substantive changes, classifies qa-swarm and AI/bot review threads as
-  actionable / nit / ambiguous, applies the clear single-file fixes, resolves
-  nits with a reply, and defers ambiguous threads to a human. Use when the user
+  substantive changes, classifies every unresolved review thread (qa-swarm,
+  AI/bot, and human) as actionable / nit / ambiguous, applies the clear
+  single-file fixes, resolves nits with a reply, and defers ambiguous or
+  human-authored threads to a human. Use when the user
   says "/review-triage", "triage the review comments", "deal with the bot
   comments", or "address the review feedback". Accepts an optional PR number or
   URL as argument. Does not touch the branch base or the stamphog label.
@@ -13,9 +14,9 @@ description: >
 # Review Triage
 
 Triages the review threads on a PR. Runs qa-swarm when there are substantive
-changes, classifies each qa-swarm and bot review thread, applies the fixes that
-are clear and localised, resolves nits with a short reply, and defers anything
-ambiguous to a human. Does **not** restack the branch, watch CI, or manage the
+changes, classifies every unresolved review thread (qa-swarm, bot, and human),
+applies the fixes that are clear and localised, resolves nits with a short
+reply, and defers ambiguous or human-authored threads to a human. Does **not** restack the branch, watch CI, or manage the
 `stamphog` label — that is `ci-shepherd`'s and `pr-shepherd`'s job.
 
 ## Dual-mode — standalone vs `pr-shepherd` sub-step
@@ -88,7 +89,7 @@ Examples:
 [triage] step 2 — skip qa-swarm, only doc-only changes since a1b2c3d
 [triage] step 3 — found 4 qa-swarm threads: 1 actionable, 2 nit, 1 ambiguous
 [triage] step 3 — applying fix for thread #42 (rename foo to bar in src/foo.ts)
-[triage] step 4 — 1 bot thread from coderabbit, resolving as nit
+[triage] step 4 — 7 other threads: 3 greptile + 2 veria bot (2 nit resolved, 3 deferred), 2 human deferred
 ```
 
 Narrate mid-step when a sub-action could take more than a few seconds (qa-swarm
@@ -265,15 +266,33 @@ gh api graphql -f query='
 CI, and stamphog management running (in `ci-shepherd` / `pr-shepherd`) while the
 user decides on the architectural questions in their own time.
 
-### Step 4: Triage bot review threads
+### Step 4: Triage every other unresolved thread (bots and humans)
 
-Same procedure as Step 3, but for unresolved threads where the first comment's
-`author.__typename == "Bot"` **or** `author.login` ends with `[bot]`, **and**
-the body does *not* start with the qa-swarm header (those were handled in
-Step 3).
+Step 3 handled the qa-swarm threads; this step accounts for **every remaining**
+unresolved, non-outdated thread from the same fetch (those whose body does not
+start with the qa-swarm header). **Nothing is silently skipped** — each thread
+ends in exactly one bucket: resolved, actioned, or deferred.
 
-This covers stamphog/posthog-code, Claude review apps, Cursor bot, CodeRabbit,
-Dependabot comment threads, etc.
+Classify each thread by who authored its first comment:
+
+- **Review bot** — `author.__typename == "Bot"`, `author.login` ends with
+  `[bot]`, **or** a known review-bot login. The typename check alone is **not**
+  enough: many review bots post through plain **user** accounts typed `User`,
+  not `Bot` (this is exactly why Greptile and Veria inline comments get missed).
+  Also match logins containing `greptile`, `veria`, `coderabbit`, `cursor`,
+  `sonarcloud`, `codescene`, `sourcery`, `ellipsis`, plus stamphog/posthog-code,
+  Claude review apps, and Dependabot. When a non-human account is posting
+  structured line-level review feedback and you're unsure, treat it as a bot.
+  Apply the Step 3 judgement rules: actionable -> fix; nit -> resolve with a
+  reply; ambiguous -> defer.
+- **Human** — a real person's review comment. **Never auto-fix or auto-resolve
+  it** — they want a reply or a decision from the author, not a silent edit. Add
+  it to `deferred_threads` and surface it in the report as human-authored.
+  (Standalone, you may offer a trivial, obviously-correct fix via
+  `AskUserQuestion`; as a `pr-shepherd` sub-step, just defer.)
+
+If you can't confidently place an author, **defer rather than ignore** — a
+surfaced thread is recoverable, a dropped one is not.
 
 > A stamphog "approval dismissed" comment is a protocol signal, not a review
 > thread — ignore it (don't reply, resolve, or treat it as actionable). Triage
@@ -305,9 +324,12 @@ small wait.
 [triage] done — sha=<short_sha> qa-swarm=<ran|skip> resolved=<n> actioned=<n> deferred=<n>
 ```
 
-If there are deferred threads, print their `file:line` and a one-line reason
-under the summary. Then hand back (the skill does not sleep or self-loop; wrap
-in `/loop` for cadence).
+Break `deferred` down by author, e.g. `deferred=5 (3 ambiguous bot, 2 human)`.
+The counts must **reconcile**: every unresolved non-outdated thread you fetched
+ends as resolved, actioned, or deferred — never seen-but-unhandled. List each
+deferred thread's author, `file:line`, and a one-line reason under the summary.
+Then hand back (the skill does not sleep or self-loop; wrap in `/loop` for
+cadence).
 
 **As a `pr-shepherd` sub-step:** end with exactly this structured result and
 nothing after it —
