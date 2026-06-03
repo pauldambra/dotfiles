@@ -389,9 +389,8 @@ for its reviewers. Pass the sub-skill's body, plus the override brief and inputs
 into a `model: 'sonnet'` `Agent` subagent — `review-triage` first, then
 `ci-shepherd`.
 
-**Resolve each sibling skill local-first, then the store**, so this loop works
-whether or not the runner has the dotfiles checkout. This covers `review-triage`,
-`ci-shepherd`, and `qa-swarm` (Step 2):
+**Resolve each sibling skill local-first, then the store.** This covers
+`review-triage`, `ci-shepherd`, and `qa-swarm` (Step 2):
 
 1. **Local:** if `~/.claude/skills/<name>/SKILL.md` exists, use it — read the
    file for the load-then-spawn brief (`review-triage`, `ci-shepherd`), or
@@ -401,9 +400,9 @@ whether or not the runner has the dotfiles checkout. This covers `review-triage`
    Pass that body as the `Agent` brief for `review-triage`/`ci-shepherd`, or
    follow it inline for `qa-swarm`.
 
-The on-disk SKILL.md and the store skill are the same content (the store is
-published from the dotfiles source), so the sub-brief lives OnceAndOnlyOnce —
-this skill just sources it from whichever location is present.
+The on-disk SKILL.md and the store skill are the same content, so the sub-brief
+lives OnceAndOnlyOnce — this skill just sources it from whichever location is
+present.
 
 Append the matching **override brief** so the runner behaves as a sub-step, not
 a standalone session (parallel to how qa-swarm overrides its security-audit
