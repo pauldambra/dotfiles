@@ -31,6 +31,11 @@ constructed in multiple places, apply the header at the outermost point
 where the body is assembled. The existing templates in Step 5 already
 include a compliant header; keep it in place when adapting them.
 
+On public repositories (e.g. PostHog/posthog), never put absolute production
+counts — raw event, user, or revenue numbers — in a finding or comment. Cite
+percentages or ratios instead; the repo is public and absolute counts leak
+operational scale.
+
 ## Workflow
 
 ### Step 1: Detect PR & gather diff

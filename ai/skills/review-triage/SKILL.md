@@ -67,6 +67,10 @@ Example reply when posting a fix:
 Fixed in `abc1234` — renamed `foo` to `bar` in `src/foo.ts`.
 ```
 
+On public repositories (e.g. PostHog/posthog), never put absolute production
+counts — raw event, user, or revenue numbers — in a reply. Cite percentages or
+ratios instead; the repo is public and absolute counts leak operational scale.
+
 ## Narration — keep the user in the loop
 
 Standalone: before **every** step below, emit a short one-line narration so the
@@ -188,10 +192,6 @@ gh api graphql -f query='
     ]'
 ```
 
-> As a `pr-shepherd` sub-step, keep the returned objects (id + `body_head`) and
-> return them in `thread_bodies_for_dismissal_scan` (Step 5) so the orchestrator
-> can scan them for the stamphog dismissal phrase without re-fetching.
-
 For each returned thread where `body_head` contains
 `🤖 Automated comment by **QA Swarm**` and thread id is not in
 `deferred_threads`:
@@ -275,11 +275,10 @@ Step 3).
 This covers stamphog/posthog-code, Claude review apps, Cursor bot, CodeRabbit,
 Dependabot comment threads, etc.
 
-> Detecting a stamphog *approval dismissal* is **not** this skill's job — that is
-> a protocol signal owned by `pr-shepherd` (it keys off the stamphog label and
-> orchestrator state). Triage the bot's review *content* here; leave dismissal
-> handling to the orchestrator. A standalone `/review-triage` simply ignores the
-> dismissal comment.
+> A stamphog "approval dismissed" comment is a protocol signal, not a review
+> thread — ignore it (don't reply, resolve, or treat it as actionable). Triage
+> the bot's review *content* here; the `stamphog` label itself is `pr-shepherd`'s
+> concern, not this skill's.
 
 #### Skip stale bot reviews
 
@@ -323,7 +322,6 @@ nothing after it —
   "actioned": 0,
   "deferred_threads": ["<id>"],
   "unresolved_actionable_remaining": false,
-  "thread_bodies_for_dismissal_scan": [{"id": "<id>", "body_head": "<<=4KB head>"}],
   "narration": ["<one [triage] line per step taken>"]
 }
 ```
