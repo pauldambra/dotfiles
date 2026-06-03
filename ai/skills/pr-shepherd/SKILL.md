@@ -184,8 +184,11 @@ Run qa-swarm when **either**:
   touches at least one non-doc file (i.e. something other than `*.md`, `*.txt`,
   or pure whitespace changes).
 
-Invoke via `Skill("qa-swarm", args="<pr_number>")` so it handles diff gathering
-and comment posting. After it completes set `qa_swarm_marker_sha = H0`.
+Invoke qa-swarm, resolved local-first then from the store (see the local-first /
+store fallback rule under *Dispatch mechanism*): run `Skill("qa-swarm",
+args="<pr_number>")` if it's installed locally, otherwise fetch its body from the
+store and follow it inline. It handles diff gathering and comment posting. After
+it completes set `qa_swarm_marker_sha = H0`.
 
 If skipping qa-swarm, log `qa-swarm: skip (no substantive changes since <sha>)`.
 
@@ -382,15 +385,25 @@ The final summary lists:
 ## Dispatch mechanism
 
 Dispatch each sub-skill by **load-then-spawn** — the same pattern `qa-swarm` uses
-for its reviewers. Read the sub-skill's body from disk and pass it, plus the
-override brief and inputs, into a `model: 'sonnet'` `Agent` subagent:
+for its reviewers. Pass the sub-skill's body, plus the override brief and inputs,
+into a `model: 'sonnet'` `Agent` subagent — `review-triage` first, then
+`ci-shepherd`.
 
-- `~/.claude/skills/review-triage/SKILL.md`
-- `~/.claude/skills/ci-shepherd/SKILL.md`
+**Resolve each sibling skill local-first, then the store**, so this loop works
+whether or not the runner has the dotfiles checkout. This covers `review-triage`,
+`ci-shepherd`, and `qa-swarm` (Step 2):
 
-The same files are what a human invokes as `/review-triage` and `/ci-shepherd`,
-so the instructions live OnceAndOnlyOnce — this skill just sources its sub-brief
-from them.
+1. **Local:** if `~/.claude/skills/<name>/SKILL.md` exists, use it — read the
+   file for the load-then-spawn brief (`review-triage`, `ci-shepherd`), or
+   `Skill("<name>")` for an invocable skill (`qa-swarm`).
+2. **Store fallback:** otherwise fetch it and use the returned `body` —
+   `mcp__posthog__exec command='call llma-skill-get {"skill_name":"<name>"}'`.
+   Pass that body as the `Agent` brief for `review-triage`/`ci-shepherd`, or
+   follow it inline for `qa-swarm`.
+
+The on-disk SKILL.md and the store skill are the same content (the store is
+published from the dotfiles source), so the sub-brief lives OnceAndOnlyOnce —
+this skill just sources it from whichever location is present.
 
 Append the matching **override brief** so the runner behaves as a sub-step, not
 a standalone session (parallel to how qa-swarm overrides its security-audit
@@ -416,9 +429,9 @@ body):
 - **`review-triage`** sub-skill (Step 3) — runs qa-swarm thread + bot thread
   triage and owns the *Judgement rules for auto-actioning a comment*.
 - **`ci-shepherd`** sub-skill (Step 4) — branch-currency restack + CI report.
-- `Skill("qa-swarm")` (Step 2) — orchestrates the four review agents. Run in
-  this main loop so its `opus` reviewer agents aren't nested inside a dispatched
-  subagent.
+- **`qa-swarm`** (Step 2) — orchestrates the four review agents; resolved
+  local-first, then the store (see *Dispatch mechanism*). Run in this main loop
+  so its `opus` reviewer agents aren't nested inside a dispatched subagent.
 - `gh` CLI (repo, pr, api, label commands).
 - Graphite MCP for git operations (used inside the sub-skills). Fall back to
   `gh`/`git` only when Graphite doesn't cover a case.
