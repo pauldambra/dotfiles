@@ -2,27 +2,25 @@
 name: pr-shepherd
 description: >
   Shepherds a PR through the repetitive loop: triage the review conversation
-  (review-triage), keep the branch current and report CI (ci-shepherd), and
-  manage the stamphog approval lifecycle — applying the `stamphog` label
-  whenever the actionable-thread state is clean (independent of CI) and handling
-  stamphog dismissals. Use when the user says "/pr-shepherd", "shepherd this
-  PR", "babysit this PR", or wants the whole review loop driven automatically.
-  Accepts an optional PR number or URL as argument.
+  (review-triage), keep the branch current and report CI (ci-shepherd), apply
+  the `stamphog` label on each new commit, and report stamphog's verdict. Use
+  when the user says "/pr-shepherd", "shepherd this PR", "babysit this PR", or
+  wants the whole review loop driven automatically. Accepts an optional PR
+  number or URL as argument.
 ---
 
 # PR Shepherd
 
 Drives a PR through the review loop by orchestrating two focused sub-skills and
-owning the stamphog approval lifecycle on top of them:
+managing the stamphog approval label on top of them:
 
 - **`review-triage`** — runs qa-swarm and triages the qa-swarm + bot review
   threads (fix / resolve / defer).
 - **`ci-shepherd`** — keeps the branch current with its base and reports CI.
 
 On top of those, this skill resolves the PR, decides when qa-swarm should run,
-detects and handles stamphog approval dismissals, applies the `stamphog` label
-whenever the actionable-thread state is clean (independent of CI), and prints
-the iteration summary. It defers anything ambiguous to the user.
+applies the `stamphog` label on each new SHA and reports stamphog's verdict, and
+prints the iteration summary. It defers anything ambiguous to the user.
 
 Each sub-skill is also independently invocable (`/review-triage`, `/ci-shepherd`)
 when you only want that slice. This skill is the full loop.
@@ -48,12 +46,12 @@ Examples:
 
 ```
 [shepherd] step 1 — resolving PR from gh pr view
+[shepherd] step 1 — no change since a1b2c3d, stamphog present — skipping iteration
 [shepherd] step 1 — PR is draft, marking ready before continuing
 [shepherd] step 2 — diff since a1b2c3d touches src/foo.ts, running qa-swarm
 [shepherd] step 3 — dispatching review-triage (sonnet runner)
 [shepherd] step 4 — dispatching ci-shepherd against H1=def4567
-[shepherd] step 5 — stamphog dismissal detected on def4567
-[shepherd] step 7 — applying stamphog label (independent of CI state)
+[shepherd] step 5 — applying stamphog at def4567; verdict so far: changes requested
 [shepherd] iter done — handing back; re-invoke or let /loop drive the next pass
 ```
 
@@ -69,8 +67,8 @@ or carried in the surrounding conversation when iterations run back-to-back
 inside one Claude session. When taking over from a previous iteration, expect
 the previous values to be quoted in the invocation or visible in the recent
 conversation; when finishing an iteration, print the values so the next caller
-can re-supply them. This skill owns all four — the sub-skills receive the ones
-they need as inputs and return updated values, but never persist state
+can re-supply them. This skill owns all of them — the sub-skills receive the
+ones they need as inputs and return updated values, but never persist state
 themselves.
 
 - `qa_swarm_marker_sha` — HEAD SHA the last time qa-swarm ran. `null` initially.
@@ -79,9 +77,9 @@ themselves.
 - `deferred_threads` — set of review-thread IDs already surfaced to the user as
   needing their judgement. Passed into `review-triage` so they're skipped on
   subsequent iterations to avoid nagging.
-- `stamphog_dismissed_on_sha` — transient, re-derived every iteration from the
-  current PR state (comments and labels — see Step 5). Set when stamphog has
-  dismissed at the current HEAD. Not persisted across iterations.
+- `last_updated_at` — the PR's `updatedAt` timestamp observed at the end of the
+  previous iteration. The Step 1 fast path compares against it to detect whether
+  anything changed since. `null` initially.
 
 ## Workflow — one iteration
 
@@ -105,52 +103,63 @@ The mechanical work lives in the two sub-skills; this skill owns the decisions.
   (review-triage commits fixes; ci-shepherd restacks), so concurrent runs would
   race the index / worktree / remote ref. And ci-shepherd must start from
   review-triage's post-fix HEAD. Run review-triage, then ci-shepherd.
-- This skill owns Steps 1, 2, 5, 6, 7, 8 — the user-facing decisions
-  (`AskUserQuestion`), the qa-swarm invocation, the stamphog lifecycle, and the
-  summary. The sub-skill runners **never call `AskUserQuestion`**; they return
-  structured results.
+- This skill owns Steps 1, 2, 5, 6 — the qa-swarm decision, the stamphog
+  apply/verdict step, the summary, and the only `AskUserQuestion` paths (no PR
+  found in Step 1, qa-swarm-skip confirm in Step 2). The sub-skill runners
+  **never call `AskUserQuestion`**; they return structured results.
 
-**HEAD-SHA threading.** Both sub-skills move HEAD, and the stamphog "once per
-SHA" gate + dismissal detection key off SHAs, so thread the HEAD forward and key
-the stamphog steps off the *final* HEAD:
+**HEAD-SHA threading.** Both sub-skills move HEAD, and the stamphog "apply once
+per SHA" gate keys off it, so thread the HEAD forward and apply stamphog against
+the *final* HEAD:
 
 ```
 H0 = Step 1 HEAD
 Step 2  run qa-swarm when warranted (at H0; qa-swarm only comments, HEAD stays H0)
 Step 3  review-triage(head_sha_in = H0) -> new_head_sha = H1   (H1 != H0 iff fixes pushed)
 Step 4  ci-shepherd(head_sha_in = H1)   -> new_head_sha = H2   (thread H1, NOT H0)
-        if restack_needs_decision: TERMINATE (hand back the file list; skip Steps 5-7)
+        if restack_needs_decision: TERMINATE (hand back the file list; skip Step 5)
 HEAD_SHA := H2                                                 (the final head)
-Step 5  detect stamphog dismissal AGAINST H2 (four surfaces)
-Step 6  only if stamphog_dismissed_on_sha == H2
-Step 7  apply stamphog iff stamphog_applied_for_sha != H2
+Step 5  apply stamphog iff stamphog_applied_for_sha != H2; read + report its verdict
 ```
 
-Two traps this avoids: (1) passing `H0` instead of `H1` to ci-shepherd would
-restack / report CI against a stale tree; (2) detecting dismissal at `H1` before
-a restack to `H2` would make `stamphog_dismissed_on_sha (H1) != HEAD_SHA (H2)`
-and silently skip Step 6.
+The trap this avoids: passing `H0` instead of `H1` to ci-shepherd would restack
+/ report CI against a stale tree.
 
 **Fields consumed from the runner results.** From `review-triage`:
-`new_head_sha`, `deferred_threads`, `unresolved_actionable_remaining`,
-`thread_bodies_for_dismissal_scan`, plus `resolved`/`actioned` for the summary.
-From `ci-shepherd`: `new_head_sha`, `ci` buckets, `restack_needs_decision` +
-`restack_decision_files`. (Each runner's full result schema is defined in its
-own *Report* step — the body you pass it carries that schema.)
+`new_head_sha`, `deferred_threads`, plus `resolved` / `actioned` /
+`unresolved_actionable_remaining` for the summary. From `ci-shepherd`:
+`new_head_sha`, `ci` buckets, `restack_needs_decision` + `restack_decision_files`.
+(Each runner's full result schema is defined in its own *Report* step — the body
+you pass it carries that schema.)
 
-### Step 1: Resolve PR and capture baseline
+### Step 1: Resolve PR, fast-path check, and capture baseline
 
 If `$ARGUMENTS` looks like a PR number or URL, use it. Otherwise:
 
 ```bash
-gh pr view --json number,headRefName,baseRefName,url,headRefOid,state,isDraft
+gh pr view --json number,headRefName,baseRefName,url,headRefOid,state,isDraft,updatedAt,labels
 gh repo view --json owner,name
 ```
 
 Record: PR number, owner/repo, base branch, HEAD SHA (`H0`), PR state, draft
-state.
+state, `updatedAt`, labels.
 
 If PR state is `MERGED` or `CLOSED`, **terminate** with a final status.
+
+**Fast path — skip the iteration when nothing changed.** On a re-invocation
+(carried state present), if **all** of:
+
+- `H0` == the previous iteration's HEAD,
+- `updatedAt` == `last_updated_at` (no commit, comment, review, or label event
+  since you finished last time), and
+- the `stamphog` label is present,
+
+then there is no new work. Emit `[shepherd] step 1 — no change since
+<short_sha>, stamphog present — skipping iteration`, print the state line (Step
+6), and exit **without dispatching review-triage or ci-shepherd**. The PR's
+`updatedAt` advances on any commit / comment / review / label event, so a match
+means the PR is genuinely idle. (CI-only status changes may not move it — that's
+acceptable: CI is non-gating, and the next real event triggers a full pass.)
 
 If `isDraft == true`, mark it ready before continuing — invoking the shepherd is
 itself the signal that the PR is ready for autonomous review:
@@ -206,8 +215,8 @@ base, `qa_swarm_marker_sha`, and `deferred_threads`, with the **review-triage
 sub-step override brief** (see *Dispatch mechanism*).
 
 Relay its `narration` verbatim. Record `new_head_sha` as `H1`, and carry forward
-`deferred_threads`, `unresolved_actionable_remaining`, and
-`thread_bodies_for_dismissal_scan`.
+`deferred_threads`, `unresolved_actionable_remaining`, `resolved`, and
+`actioned`.
 
 ### Step 4: Dispatch ci-shepherd
 
@@ -220,101 +229,27 @@ buckets.
 
 If it returns `restack_needs_decision: true`, **terminate** this iteration: hand
 the `restack_decision_files` list back to the user with the one-line reasons.
-Skip Steps 5-7 (a needs-decision conflict is a Step 4 terminal condition).
+Skip Step 5 (a needs-decision conflict is a Step 4 terminal condition).
 
-### Step 5: Detect stamphog approval dismissal
+### Step 5: Apply `stamphog` and read its verdict
 
-Stamphog removes its own approval and its `stamphog` label whenever new commits
-are pushed after a prior approval, and posts:
+`stamphog` is PostHog/posthog's PR Approval Agent. It re-reviews on every push,
+so the shepherd's whole job here is to keep the label on the current SHA and
+report the verdict. There is **no dismissal-detection or re-request dance** —
+re-applying the label on each new SHA is itself what re-triggers a review, so we
+just always apply it when the SHA is new.
 
-> New commits pushed — stamphog approval dismissed. Re-apply the stamphog label
-> to request a re-review.
-
-This is a protocol signal, not a review thread to reply to or resolve. Scan
-**all four** surfaces where stamphog may signal it, keyed off the final HEAD
-`H2`. For the issue-comments and reviews fetches, pipe through jq so only a
-boolean lands in context — the raw payloads on a busy PR can be tens of KB and
-we only need to know whether the phrase is present.
-
-Top-level PR issue comments:
-
-```bash
-gh api repos/<owner>/<repo>/issues/<pr_number>/comments \
-  | jq 'any(.[]; (.user.type == "Bot") and ((.body // "") | contains("stamphog approval dismissed")))'
-```
-
-Dismissed review bodies:
-
-```bash
-gh api repos/<owner>/<repo>/pulls/<pr_number>/reviews \
-  | jq 'any(.[]; (.state == "DISMISSED") and ((.body // "") | contains("stamphog approval dismissed")))'
-```
-
-Inline review thread comments — already fetched by `review-triage`. Scan the
-`body_head` of each entry in `thread_bodies_for_dismissal_scan` for the same
-phrase. (No re-fetch — the runner already paid for that query.)
-
-Current PR labels —
-
-```bash
-gh pr view <pr_number> --json labels
-```
-
-Treat the dismissal as detected when `stamphog_applied_for_sha == H2` but
-`stamphog` is **not** in the returned labels. This catches the silent-removal
-case where stamphog's verdict is unchanged from a previous explicit dismissal
-(e.g. a hard size gate) and the label disappears without a new comment.
-
-If any of the four returns `true` (or the silent-removal condition above is
-met), set `stamphog_dismissed_on_sha = H2` and log `[shepherd] step 5 — stamphog
-dismissal detected on <short_sha>` (append `(silent label removal)` when the
-label-state surface triggered it). Do **not** reply to or resolve the dismissal
-comment — Step 6 decides what to do about it.
-
-### Step 6: Handle stamphog dismissal before re-requesting review
-
-Only runs when `stamphog_dismissed_on_sha == H2` (detected in Step 5). If
-`stamphog_dismissed_on_sha` is unset, skip this step and fall through to Step 7.
-
-Decide automatically or prompt the user:
-
-- **Auto re-apply** when *all* of:
-  - `deferred_threads` is empty, and
-  - `unresolved_actionable_remaining == false` from the review-triage result
-    (every unresolved thread was classified NIT and resolved, or was never
-    actionable).
-
-  In that case clear `stamphog_applied_for_sha` (set it to `null`) so Step 7
-  will re-apply the label. Narrate `[shepherd] step 6 — stamphog dismissal,
-  clean state, re-requesting review`.
-
-- **Prompt the user** (via `AskUserQuestion`) whenever any `deferred_threads`
-  are still open. The human deferred those deliberately — re-requesting review
-  now would ignore their judgement. Offer two choices:
-  1. re-apply `stamphog` now anyway (clear `stamphog_applied_for_sha` and fall
-     through to Step 7),
-  2. leave it dismissed and **terminate** so the human can handle the deferred
-     threads first.
-
-  Narrate `[shepherd] step 6 — stamphog dismissal with <n> deferred threads,
-  asking user`.
-
-### Step 7: Apply `stamphog` once per SHA
-
-Only if `stamphog_applied_for_sha != H2`.
-
-First guard against two hazards — a draft PR (the PR Approval Agent workflow
-silently skips on drafts) and an out-of-band push that moved HEAD since Step 4:
+Apply the label when `stamphog_applied_for_sha != H2`. First re-read two fields
+to guard against a draft PR and an out-of-band push since Step 4:
 
 ```bash
 gh pr view <pr_number> --json isDraft,headRefOid
 ```
 
 - If `headRefOid != H2`, HEAD moved under us (a human or stamphog pushed between
-  Step 4 and now). **Skip stamphog this iteration** and let the next pass
-  re-baseline — narrate `[shepherd] step 7 — HEAD moved since H2, skipping
-  stamphog; next pass re-baselines`. GitHub is the source of truth, so this is
-  cheap and restartable.
+  Step 4 and now). **Skip applying this iteration** and let the next pass
+  re-baseline — narrate `[shepherd] step 5 — HEAD moved since H2, skipping
+  stamphog; next pass re-baselines`.
 - If `isDraft == true`, run `gh pr ready <pr_number>` first — a draft PR makes
   every PR-Approval-Agent job skip at its `!draft` gate with no comment and no
   log, which looks identical to "stamphog hasn't run yet".
@@ -325,33 +260,48 @@ Then:
 gh pr edit <pr_number> --add-label stamphog
 ```
 
-Set `stamphog_applied_for_sha = H2`. The stamphog review will appear as new bot
-comments on the next iteration's review-triage pass.
+Set `stamphog_applied_for_sha = H2`. If `stamphog_applied_for_sha == H2` already,
+skip — the label is current for this SHA.
 
-If `stamphog_applied_for_sha == H2`, skip — already stamped.
+**Read the verdict** for the summary (informational — never gates, never
+prompts):
 
-This step is intentionally independent of CI state. Stamphog evaluates in
-parallel; there is no benefit to waiting.
+```bash
+gh pr view <pr_number> --json reviewDecision,latestReviews
+```
 
-### Step 8: Iteration summary and hand-back
+Report stamphog's current state — approved, changes requested, or dismissed —
+plus a one-line reason from its latest review body when present. Surfacing *why*
+stamphog is unhappy helps the user decide; the shepherd does not act on it beyond
+reporting (the actionable review *threads* were already triaged in Step 3).
+
+This step is independent of CI state. Stamphog evaluates in parallel; there is no
+benefit to waiting.
+
+### Step 6: Iteration summary and hand-back
 
 Print a one-line **summary** of the iteration (on top of the per-step narration
 and the relayed sub-skill narration from earlier):
 
 ```
-[shepherd] iter done — sha=<short_sha> qa-swarm=<ran|skip> resolved=<n> actioned=<n> deferred=<n> ci=<pass=N pending=N fail=N> stamphog=<applied|already|waiting|dismissed|re-requested>
+[shepherd] iter done — sha=<short_sha> qa-swarm=<ran|skip> resolved=<n> actioned=<n> deferred=<n> ci=<pass=N pending=N fail=N> stamphog=<applied|already|skipped> verdict=<approved|changes|dismissed|pending>
 ```
 
 If there are deferred threads, print their `file:line` and one-line reason under
 the status line. If any CI checks are failing, print their names + links on a
-separate line (informational — not a termination).
+separate line (informational — not a termination). If stamphog requested changes
+or dismissed, print its one-line reason.
 
-Then print the four state values so the next caller (the user, or the `loop`
-skill) can re-supply them:
+Then print the state values so the next caller (the user, or the `loop` skill)
+can re-supply them:
 
 ```
-[shepherd] state — qa_swarm_marker_sha=<sha|null> stamphog_applied_for_sha=<sha|null> deferred_threads=[<id>,...] stamphog_dismissed_on_sha=<sha|null>
+[shepherd] state — qa_swarm_marker_sha=<sha|null> stamphog_applied_for_sha=<sha|null> deferred_threads=[<id>,...] last_updated_at=<iso8601|null>
 ```
+
+Set `last_updated_at` to the PR's `updatedAt` re-read at the end of this
+iteration (after your actions), so the next fast-path check compares against a
+post-action baseline.
 
 Hand back. The skill does not sleep or self-loop. For hands-off cadence wrap
 this skill in `/loop` (e.g. `/loop 5m /pr-shepherd <pr>`); otherwise re-invoke
@@ -364,10 +314,11 @@ Stop cleanly and print a final summary when **any** of:
 - PR is `MERGED` or `CLOSED`.
 - A base-branch conflict needs a human decision (ci-shepherd returned
   `restack_needs_decision` — see Step 4).
-- `stamphog` is already applied for the current SHA, no new bot threads have
-  appeared since the last iteration, and the only remaining unresolved threads
-  are in `deferred_threads` — nothing autonomous left to do (CI state, pass or
-  fail, does not factor in).
+- `stamphog` is applied for the current SHA, no new bot threads have appeared
+  since the last iteration, and the only remaining unresolved threads are in
+  `deferred_threads` — nothing autonomous left to do (CI state, pass or fail,
+  does not factor in). The Step 1 fast path short-circuits this case on
+  re-invocation.
 - The user interrupts.
 
 CI failures are **not** a terminal condition. They are reported in the iteration
@@ -380,7 +331,7 @@ The final summary lists:
 - commits pushed (with short SHAs and messages),
 - threads resolved (count, grouped by "fixed" / "replied"),
 - threads deferred (with file:line and one-line reason each),
-- final CI state, label state, and PR merge state.
+- final CI state, stamphog verdict, label state, and PR merge state.
 
 ## Dispatch mechanism
 
@@ -439,12 +390,11 @@ body):
 ## Graceful degradation
 
 - **`review-triage` skill missing:** warn and continue with `ci-shepherd` +
-  stamphog. But without the deferred/actionable signal you cannot assert a clean
-  state, so **never auto-reapply on a dismissal** — always `AskUserQuestion` in
-  Step 6.
+  stamphog. You lose the triage signal (resolved/deferred counts), but stamphog
+  is still applied and its verdict still read.
 - **`ci-shepherd` skill missing:** warn and skip the restack + CI report; run
-  review-triage and the stamphog lifecycle against `H1` (no further HEAD
-  movement). Report CI as unknown.
+  review-triage and apply stamphog against `H1` (no further HEAD movement).
+  Report CI as unknown.
 - **`qa-swarm` skill missing:** warn and skip Step 2; review-triage still
   triages whatever bot threads exist.
 - **`Agent` can't be spawned:** fall back to running the sub-skill body inline in

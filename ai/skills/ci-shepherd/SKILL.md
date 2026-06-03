@@ -222,14 +222,11 @@ normally.
 ### Posting via Graphite — `gt submit` "trunk branch is out of date"
 
 After a restack, `gt submit --no-interactive --no-edit --publish` can refuse
-with an error along the lines of *"trunk branch is out of date"*. Two paths
-forward:
+with an error along the lines of *"trunk branch is out of date"*. Run the
+Graphite MCP "sync trunk" / "restack" cycle first, then retry `gt submit` once.
 
-1. Run the Graphite MCP "sync trunk" / "restack" cycle first, then retry `gt
-   submit`.
-2. If you only need to push the head ref of the current branch and nothing else
-   in the stack has shifted, fall back to a direct `git push origin <branch>` —
-   it preserves the remote ref without requiring trunk to be current locally.
-
-Don't loop on `gt submit` retries — they will keep failing for the same reason.
-Choose one of the two paths above and move on.
+Stay on Graphite for the push. Do **not** fall back to a raw `git push` (or
+`git push --force-with-lease`) after a restack — it bypasses Graphite's
+base-branch tracking and can leave the PR pointing at a stale `graphite-base/`
+ref instead of the real base. Sync trunk, restack, then `gt submit`; don't loop
+on retries.
