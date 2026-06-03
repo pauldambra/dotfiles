@@ -60,9 +60,10 @@ branch, changed file list, full diff, commit log, and HEAD SHA.
 
 ### Step 2: Load skill content
 
-Load the four reviewer bodies. The first three live on disk; the fourth lives
-in the PostHog skills store and is fetched via MCP. If any reviewer's content
-is unavailable, warn the user and skip that reviewer — the others still run.
+Load the four reviewer bodies. qa-team is on disk; paul-reviewer and xp-reviewer
+resolve local-first then from the PostHog skill store; security-audit is
+store-only. If any reviewer's content is unavailable (not on disk or in the
+store), warn the user and skip that reviewer — the others still run.
 
 Issue all four loads in **parallel** (single message, four tool calls) so the
 MCP round-trip does not serialize with the on-disk reads.
@@ -75,13 +76,18 @@ If found, also read from the same directory:
 - `references/personas.md`
 - `references/incident-patterns.md`
 
-**paul-reviewer:**
-- `~/.claude/skills/paul-reviewer/SKILL.md`
-- `~/.claude/skills/paul-reviewer/references/real-review-examples.md`
+**paul-reviewer** and **xp-reviewer** — resolve each local-first, then from the
+PostHog skill store, so qa-swarm works without the dotfiles checkout:
 
-**xp-reviewer:**
-- `~/.claude/skills/xp-reviewer/SKILL.md`
-- `~/.claude/skills/xp-reviewer/c2wiki-wisdom.md`
+1. **Local:** if `~/.claude/skills/<name>/SKILL.md` exists, read it plus its
+   bundled reference from the same dir — `references/real-review-examples.md`
+   for paul-reviewer, `c2wiki-wisdom.md` for xp-reviewer.
+2. **Store fallback:** otherwise fetch from the store —
+   `call llma-skill-get {"skill_name":"<name>"}` for the body, then for each
+   entry in the returned `files[]` manifest
+   `call llma-skill-file-get {"skill_name":"<name>","file_path":"<path>"}` to
+   pull the reference content (in the store the xp wisdom file is
+   `references/c2wiki-wisdom.md`).
 
 **security-audit** (PostHog MCP — network-dependent, more likely to fail than
 the on-disk reads above):
@@ -326,8 +332,8 @@ EOF
 ### Graceful degradation
 
 - **qa-team files not found:** Skip qa-team agent. Warn user. Run the other three.
-- **paul-reviewer not found:** Skip paul agent. Warn user. Run the other three.
-- **xp-reviewer not found:** Skip xp agent. Warn user. Run the other three.
+- **paul-reviewer not found (disk or store):** Skip paul agent. Warn user. Run the other three.
+- **xp-reviewer not found (disk or store):** Skip xp agent. Warn user. Run the other three.
 - **security-audit not found / PostHog MCP unavailable:** Skip security-audit
   agent. Warn user (`security-audit: skip (MCP unavailable)`). Run the other
   three. This case is more likely than the on-disk skips above because it
