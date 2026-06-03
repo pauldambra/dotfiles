@@ -77,7 +77,7 @@ If found, also read from the same directory:
 - `references/incident-patterns.md`
 
 **paul-reviewer** and **xp-reviewer** — resolve each local-first, then from the
-PostHog skill store, so qa-swarm works without the dotfiles checkout:
+PostHog skill store:
 
 1. **Local:** if `~/.claude/skills/<name>/SKILL.md` exists, read it plus its
    bundled reference from the same dir — `references/real-review-examples.md`
