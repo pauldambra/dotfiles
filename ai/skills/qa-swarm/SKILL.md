@@ -102,6 +102,11 @@ the other three reviewers.
 Launch ALL agents in a **single message** with multiple Agent tool calls so
 they run in true parallel.
 
+Spawn every one of these review agents with `model: 'opus'`. Review is the
+reasoning-heavy part of the loop and must stay sharp even when the caller
+(e.g. pr-shepherd's runner) is on a cheaper model. Pin the model explicitly
+on each Agent call rather than inheriting the session/caller model.
+
 Each agent is told it is the sole reviewer. Each must return findings in the
 structured format described in "Agent output format" below.
 

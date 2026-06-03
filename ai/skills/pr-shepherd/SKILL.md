@@ -116,6 +116,53 @@ re-supply them.
 
 ## Workflow — one iteration
 
+### Execution model — delegate the mechanical loop to a cheap runner
+
+Steps 3-6 are pure mechanical work: GraphQL/REST fetches, `jq` filtering,
+thread replies and resolves, autonomous fixes, branch restack, and CI
+polling. They carry the bulk of this loop's tool calls and need no deep
+reasoning, so run them on a cheaper model to keep the loop inexpensive.
+
+Steps 1, 2, 6.5, 7, and 8 stay in the **main loop** — they own the
+user-facing decisions (`AskUserQuestion`), the qa-swarm invocation (whose
+reviewers carry their own model), and the final label/summary.
+
+After Step 2, spawn a **single subagent with `model: 'sonnet'`** to execute
+Steps 3, 4, 5, and 6 for this iteration. Pass it:
+
+- the PR number, owner/repo, base branch, and current HEAD SHA,
+- the carried state (`qa_swarm_marker_sha`, `stamphog_applied_for_sha`,
+  `deferred_threads`),
+- the full Step 3-6 instructions below as its brief.
+
+The runner does **all autonomous work itself** — classify threads, reply,
+resolve, apply + commit + push fixes via the Graphite MCP, restack the
+branch, count CI buckets. It must **never call `AskUserQuestion`**; it has no
+user to ask. Instead it returns a single structured result:
+
+```json
+{
+  "new_head_sha": "<sha after any fixes/restack>",
+  "resolved": 0, "actioned": 0,
+  "deferred_threads": ["<id>"],
+  "ci": {"pass": 0, "pending": 0, "fail": 0, "failing": [{"name": "", "link": ""}]},
+  "stamphog_dismissed": false,
+  "restack_needs_decision": false,
+  "restack_decision_files": [{"path": "", "reason": ""}],
+  "narration": ["<one [shepherd] line per step taken>"]
+}
+```
+
+Relay the runner's `narration` lines verbatim. If it reports
+`restack_needs_decision: true`, treat it as the Step 5 terminal condition
+(hand back to the user with the file list). Otherwise the main loop resumes
+at Step 6.5 with the returned state — use `stamphog_dismissed` as the Step 4
+`stamphog_dismissed_on_sha` signal and `new_head_sha` as the current HEAD.
+
+Because the runner starts from a tight brief rather than the full session
+history, its per-call context is small — this drops both the model price and
+the per-call context that otherwise dominates this loop's cost.
+
 ### Step 1: Resolve PR and capture baseline
 
 If `$ARGUMENTS` looks like a PR number or URL, use it. Otherwise:
@@ -163,6 +210,10 @@ override -- a quiet skip hides judgement calls the user may want to
 challenge. "Review fatigue" alone is not sufficient grounds.
 
 ### Step 3: Triage qa-swarm review threads
+
+> Runs inside the `model: 'sonnet'` runner subagent (Steps 3-6) — see
+> *Execution model* above. The runner performs every action here itself and
+> reports back via the structured result; it never asks the user.
 
 Fetch all review threads on the PR. Filter to unresolved, non-outdated
 threads and trim each body to 4 KB at the jq layer — bot reviews
@@ -454,6 +505,10 @@ Fall through to Step 6.5.
 
 ### Step 6.5: Handle stamphog dismissal before re-requesting review
 
+> Back in the main loop — this step owns the `AskUserQuestion` path, so it
+> must not run inside the runner. Drive it from the runner's returned
+> `stamphog_dismissed` and `deferred_threads`.
+
 Only runs when `stamphog_dismissed_on_sha == HEAD_SHA` (detected in
 Step 4).
 
@@ -578,6 +633,9 @@ status line is cheaper than a wrong push.
 - `gh` CLI (repo, pr, api, label commands).
 - Graphite MCP for git operations (commit/push/restack). Fall back to
   `gh`/`git` only when Graphite doesn't cover a case.
+- A `model: 'sonnet'` runner subagent (`Agent` tool) for Steps 3-6 — see
+  *Execution model*. If the runner can't be spawned, fall back to running
+  Steps 3-6 inline in the main loop.
 
 ## Graceful degradation
 
