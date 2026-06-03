@@ -80,11 +80,11 @@ with `gh pr view --json headRefOid`.
 
 ### Step 3: Triage unresolved review threads
 
-Fetch all unresolved review threads (same GraphQL query as `pr-shepherd`
+Fetch all unresolved review threads (same GraphQL query as `review-triage`
 Step 3). For each thread:
 
 Classify as **Actionable**, **NIT / non-actionable**, or **Ambiguous**,
-using the same judgement rules documented in `pr-shepherd` §"Judgement
+using the same judgement rules documented in `review-triage` §"Judgement
 rules for auto-actioning a comment". The thresholds are identical — do
 not re-derive them here.
 
@@ -93,7 +93,7 @@ Handle each class:
 - **Actionable** — apply the edit, commit via Graphite MCP with a message
   like `fix: address stale review comment <short summary>`, push, then
   resolve the thread with a short reply noting the commit SHA. Include the
-  bot-identifier header from `pr-shepherd` so it's clearly automated.
+  bot-identifier header from `review-triage` so it's clearly automated.
 - **NIT** — resolve with a one-line reply explaining why (intentional,
   out of scope, disagree + reason).
 - **Ambiguous** — leave unresolved. Surface in the final summary as
