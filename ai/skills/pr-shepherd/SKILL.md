@@ -32,6 +32,25 @@ re-invoke manually. State is carried between invocations via `$ARGUMENTS` or via
 the surrounding conversation when iterations run back-to-back inside one Claude
 session.
 
+## Run the loop session on Sonnet
+
+This loop is built to keep **mechanical work on Sonnet** and **review work on
+Opus**, but only the subagents can be pinned — the orchestration cannot:
+
+- `review-triage` and `ci-shepherd` are dispatched as `model: 'sonnet'` Agent
+  subagents (Steps 3-4) — pinned, model-independent of the caller.
+- qa-swarm pins its four reviewer agents to `model: 'opus'` regardless of the
+  caller (Step 2) — reviews stay sharp even on a cheaper session.
+- The top-level orchestration (PR resolution, the qa-swarm decision, qa-swarm's
+  own coordination, stamphog, the summary) runs in the **main loop**, so it
+  inherits the **session model**. A skill cannot switch its own session model.
+
+So launch the session on Sonnet — `/model sonnet` before
+`/loop 5m /pr-shepherd <pr>` — to get mechanical-on-Sonnet, reviews-on-Opus end
+to end. On an Opus session the split still holds for the subagents and the
+reviews, but the orchestration loop pays Opus rates for work that does not need
+it.
+
 ## Narration — keep the user in the loop
 
 Skills run silently unless the assistant prints text between tool calls. Before

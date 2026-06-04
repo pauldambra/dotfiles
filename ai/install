@@ -43,6 +43,24 @@ for skill_dir in "$AI_DIR"/skills/*; do
   fi
 done
 
+CLAUDE_COMMANDS_DIR="$HOME/.claude/commands"
+mkdir -p "$CLAUDE_COMMANDS_DIR"
+
+for cmd_file in "$AI_DIR"/commands/*.md; do
+  if [ -f "$cmd_file" ]; then
+    cmd_name=$(basename "$cmd_file")
+    target="$CLAUDE_COMMANDS_DIR/$cmd_name"
+
+    if [ -L "$target" ] || [ -e "$target" ]; then
+      rm -rf "$target"
+      echo "Removed existing command link: $target"
+    fi
+
+    ln -s "$cmd_file" "$target"
+    echo "Linked command $cmd_name to $target"
+  fi
+done
+
 LINK_MEMORY="$AI_DIR/skills/manage-claude-memory/scripts/link-memory.sh"
 if [ -x "$LINK_MEMORY" ]; then
   echo "Linking Claude memory dirs..."
