@@ -1,1 +1,3 @@
 - [Prompt before bypassing an available skill](feedback_skill_choice.md) — if a relevant skill/MCP tool exists, ask Paul before routing around it.
+- [Writing to the PostHog skill store](reference_posthog_skill_store_writes.md) — do llma-skill-* writes from the main session (sub-agents 401), escape bodies with jq, prefer edits.
+- [Dotfiles skill deploy](reference_dotfiles_skill_deploy.md) — ai/install symlinks ai/skills/* to ~/.claude/skills; symlinks point at the main checkout, not worktrees.
