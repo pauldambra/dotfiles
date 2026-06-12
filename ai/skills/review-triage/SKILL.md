@@ -103,15 +103,18 @@ the side of more lines, not fewer.
 > Skipped as a `pr-shepherd` sub-step — the caller supplies the PR number,
 > owner/repo, base, `head_sha_in`, `qa_swarm_marker_sha`, and `deferred_threads`.
 
-If `$ARGUMENTS` looks like a PR number or URL, use it. Otherwise:
+If `$ARGUMENTS` looks like a PR number or URL, use it. Otherwise resolve
+everything in **one** call — derive owner/repo from the `url` field
+(`https://github.com/OWNER/REPO/pull/N`) instead of a second `gh repo view`:
 
 ```bash
-gh pr view --json number,headRefName,baseRefName,url,headRefOid,state
-gh repo view --json owner,name
+gh pr view --json number,url,headRefName,baseRefName,headRefOid,state \
+  --jq '{number, url, base: .baseRefName, head_sha: .headRefOid, state}'
 ```
 
-Record: PR number, owner/repo, base branch, HEAD SHA, PR state. If the PR state
-is `MERGED` or `CLOSED`, there is nothing to triage — print that and stop.
+Record: PR number, owner/repo (parsed from `url`), base branch, HEAD SHA, PR
+state. If the PR state is `MERGED` or `CLOSED`, there is nothing to triage —
+print that and stop.
 
 Standalone, `qa_swarm_marker_sha` is your own per-run state (`null` on the first
 pass; the HEAD you last ran qa-swarm at on subsequent passes within a `/loop`).
@@ -146,11 +149,12 @@ user may want to challenge. "Review fatigue" alone is not sufficient grounds.
 ### Step 3: Triage qa-swarm review threads
 
 Fetch all review threads on the PR. Filter to unresolved, non-outdated threads
-and trim each body to 4 KB at the jq layer — bot reviews (qa-swarm, claude
+and trim each body to 1500 chars at the jq layer — bot reviews (qa-swarm, claude
 review apps, coderabbit) can be tens of KB each, and fetching the full payload
-every poll is the single biggest context cost of this loop. The 4 KB head is
-enough to classify; refetch the full body only for the one thread you're about
-to action (see *Refetch full body before acting* below).
+every poll is the single biggest context cost of this loop. Bot comments put
+their tag, severity, and finding summary in the first few hundred chars, so the
+1500-char head is enough to classify; refetch the full body only for the one
+thread you're about to action (see *Refetch full body before acting* below).
 
 ```bash
 gh api graphql -f query='
@@ -186,8 +190,8 @@ gh api graphql -f query='
           author_login: .comments.nodes[0].author.login,
           author_type: .comments.nodes[0].author.__typename,
           first_comment_id: .comments.nodes[0].databaseId,
-          body_head: (.comments.nodes[0].body[:4000]),
-          body_truncated: ((.comments.nodes[0].body | length) > 4000),
+          body_head: (.comments.nodes[0].body[:1500]),
+          body_truncated: ((.comments.nodes[0].body | length) > 1500),
           reply_count: ((.comments.nodes | length) - 1)
         }
     ]'

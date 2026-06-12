@@ -35,19 +35,20 @@ session.
 ## Run the loop session on Sonnet
 
 This loop is built to keep **mechanical work on Sonnet** and **review work on
-Opus**, but only the subagents can be pinned — the orchestration cannot:
+Fable/Opus**, but only the subagents can be pinned — the orchestration cannot:
 
 - `review-triage` and `ci-shepherd` are dispatched as `model: 'sonnet'` Agent
   subagents (Steps 3-4) — pinned, model-independent of the caller.
-- qa-swarm pins its four reviewer agents to `model: 'opus'` regardless of the
-  caller (Step 2) — reviews stay sharp even on a cheaper session.
+- qa-swarm pins its four reviewer agents regardless of the caller (Step 2) —
+  `fable` for qa-team and security-audit, `opus` for paul-reviewer and
+  xp-reviewer — so reviews stay sharp even on a cheaper session.
 - The top-level orchestration (PR resolution, the qa-swarm decision, qa-swarm's
   own coordination, stamphog, the summary) runs in the **main loop**, so it
   inherits the **session model**. A skill cannot switch its own session model.
 
 So launch the session on Sonnet — `/model sonnet` before
-`/loop 5m /pr-shepherd <pr>` — to get mechanical-on-Sonnet, reviews-on-Opus end
-to end. On an Opus session the split still holds for the subagents and the
+`/loop 5m /pr-shepherd <pr>` — to get mechanical-on-Sonnet, deep-reviews-on-Fable
+end to end. On an Opus session the split still holds for the subagents and the
 reviews, but the orchestration loop pays Opus rates for work that does not need
 it.
 
@@ -107,8 +108,9 @@ themselves.
 The mechanical work lives in the two sub-skills; this skill owns the decisions.
 
 - **qa-swarm runs in this main loop** (Step 2), via `Skill("qa-swarm")` — *not*
-  inside a sub-skill runner. qa-swarm itself spawns four `opus` reviewer agents,
-  and we keep that out of a dispatched subagent to avoid nesting agent spawns
+  inside a sub-skill runner. qa-swarm itself spawns four reviewer agents
+  (`fable`/`opus` per its own split), and we keep that out of a dispatched
+  subagent to avoid nesting agent spawns
   (the same reason the previous single-runner design kept qa-swarm in the main
   loop).
 - **`review-triage` and `ci-shepherd` each run as a single `model: 'sonnet'`
@@ -153,15 +155,18 @@ you pass it carries that schema.)
 
 ### Step 1: Resolve PR, fast-path check, and capture baseline
 
-If `$ARGUMENTS` looks like a PR number or URL, use it. Otherwise:
+If `$ARGUMENTS` looks like a PR number or URL, use it. Otherwise resolve
+everything in **one** call — always pass `--jq` so only the needed fields reach
+context, and derive owner/repo from the `url` field
+(`https://github.com/OWNER/REPO/pull/N`) instead of a second `gh repo view`:
 
 ```bash
-gh pr view --json number,headRefName,baseRefName,url,headRefOid,state,isDraft,updatedAt,labels
-gh repo view --json owner,name
+gh pr view --json number,url,headRefName,baseRefName,headRefOid,state,isDraft,updatedAt,labels \
+  --jq '{number, url, base: .baseRefName, head_sha: .headRefOid, state, isDraft, updatedAt, labels: [.labels[].name]}'
 ```
 
-Record: PR number, owner/repo, base branch, HEAD SHA (`H0`), PR state, draft
-state, `updatedAt`, labels.
+Record: PR number, owner/repo (parsed from `url`), base branch, HEAD SHA
+(`H0`), PR state, draft state, `updatedAt`, label names.
 
 If PR state is `MERGED` or `CLOSED`, **terminate** with a final status.
 
@@ -283,10 +288,14 @@ Set `stamphog_applied_for_sha = H2`. If `stamphog_applied_for_sha == H2` already
 skip — the label is current for this SHA.
 
 **Read the verdict** for the summary (informational — never gates, never
-prompts):
+prompts). Run this read unconditionally at the end of Step 5 — even when the
+label apply was skipped — and in **one** call that also re-reads `updatedAt`
+for Step 6. The 400-char body cap matters: full review bodies can be tens of
+KB and never need to enter context:
 
 ```bash
-gh pr view <pr_number> --json reviewDecision,latestReviews
+gh pr view <pr_number> --json reviewDecision,latestReviews,updatedAt \
+  --jq '{reviewDecision, updatedAt, reviews: [.latestReviews[] | {author: .author.login, state, body: .body[:400]}]}'
 ```
 
 Report stamphog's current state — approved, changes requested, or dismissed —
@@ -318,9 +327,9 @@ can re-supply them:
 [shepherd] state — qa_swarm_marker_sha=<sha|null> stamphog_applied_for_sha=<sha|null> deferred_threads=[<id>,...] last_updated_at=<iso8601|null>
 ```
 
-Set `last_updated_at` to the PR's `updatedAt` re-read at the end of this
-iteration (after your actions), so the next fast-path check compares against a
-post-action baseline.
+Set `last_updated_at` from the `updatedAt` returned by Step 5's combined
+verdict read — it runs after your actions, so the next fast-path check compares
+against a post-action baseline. No separate re-read is needed.
 
 Hand back. The skill does not sleep or self-loop. For hands-off cadence wrap
 this skill in `/loop` (e.g. `/loop 5m /pr-shepherd <pr>`); otherwise re-invoke
@@ -400,7 +409,8 @@ body):
 - **`ci-shepherd`** sub-skill (Step 4) — branch-currency restack + CI report.
 - **`qa-swarm`** (Step 2) — orchestrates the four review agents; resolved
   local-first, then the store (see *Dispatch mechanism*). Run in this main loop
-  so its `opus` reviewer agents aren't nested inside a dispatched subagent.
+  so its `fable`/`opus` reviewer agents aren't nested inside a dispatched
+  subagent.
 - `gh` CLI (repo, pr, api, label commands).
 - Graphite MCP for git operations (used inside the sub-skills). Fall back to
   `gh`/`git` only when Graphite doesn't cover a case.
