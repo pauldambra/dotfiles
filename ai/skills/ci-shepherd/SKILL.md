@@ -64,15 +64,17 @@ graphite restack, a push). A silent 30+ second gap is the failure mode.
 > Skipped as a `pr-shepherd` sub-step — the caller supplies the PR number,
 > owner/repo, base, and `head_sha_in`.
 
-If `$ARGUMENTS` looks like a PR number or URL, use it. Otherwise:
+If `$ARGUMENTS` looks like a PR number or URL, use it. Otherwise resolve
+everything in **one** call — derive owner/repo from the `url` field
+(`https://github.com/OWNER/REPO/pull/N`) instead of a second `gh repo view`:
 
 ```bash
-gh pr view --json number,headRefName,baseRefName,url,headRefOid,state
-gh repo view --json owner,name
+gh pr view --json number,url,headRefName,baseRefName,headRefOid,state \
+  --jq '{number, url, base: .baseRefName, head_sha: .headRefOid, state}'
 ```
 
-Record: PR number, owner/repo, base branch, HEAD SHA, PR state. If the PR state
-is `MERGED` or `CLOSED`, print that and stop.
+Record: PR number, owner/repo (parsed from `url`), base branch, HEAD SHA, PR
+state. If the PR state is `MERGED` or `CLOSED`, print that and stop.
 
 ### Step 2: Keep the branch current with its base
 
@@ -144,15 +146,18 @@ nothing here and fall through to Step 3 with the unchanged HEAD.
 
 ### Step 3: Check CI (report only, never gate)
 
+Aggregate in jq — a busy repo can have 100+ checks and only the counts plus the
+failing names/links are ever reported. The `|| true` matters: `gh pr checks`
+exits non-zero when any check is pending or failing, and that exit code is
+signal, not an error:
+
 ```bash
-gh pr checks <pr_number> --json name,state,bucket,link
+gh pr checks <pr_number> --json name,bucket,link \
+  --jq '{pass: map(select(.bucket=="pass"))|length, pending: map(select(.bucket=="pending"))|length, fail: [.[]|select(.bucket=="fail")|{name,link}]}' || true
 ```
 
-Count buckets and record them for the report:
-
-- `bucket == "pass"` count
-- `bucket == "pending"` count
-- `bucket == "fail"` count + names + links
+Record the result for the report: pass count, pending count, fail count plus
+names + links.
 
 CI state is **never** a gate and **never** a terminal condition. This skill
 reports it; whatever consumes the report (a human, or `pr-shepherd`) decides

@@ -113,10 +113,18 @@ the other three reviewers.
 Launch ALL agents in a **single message** with multiple Agent tool calls so
 they run in true parallel.
 
-Spawn every one of these review agents with `model: 'opus'`. Review is the
-reasoning-heavy part of the loop and must stay sharp even when the caller
-(e.g. pr-shepherd's runner) is on a cheaper model. Pin the model explicitly
-on each Agent call rather than inheriting the session/caller model.
+Pin each reviewer's model explicitly on its Agent call rather than inheriting
+the session/caller model — review is the reasoning-heavy part of the loop and
+must stay sharp even when the caller (e.g. pr-shepherd's runner) is on a
+cheaper model. The split:
+
+- **qa-team and security-audit: `model: 'fable'`** — the technical-depth
+  reviewers get the strongest model.
+- **paul-reviewer and xp-reviewer: `model: 'opus'`** — voice/style reviewers;
+  fable's 2x per-token cost isn't warranted there.
+
+If the harness rejects `'fable'` (older Claude Code), fall back to `'opus'`
+for that agent.
 
 Each agent is told it is the sole reviewer. Each must return findings in the
 structured format described in "Agent output format" below.
