@@ -9,11 +9,13 @@ Invoke the `pr-shepherd` skill (via the Skill tool) with `$ARGUMENTS` and follow
 This command exists only to pin the shepherd's orchestration loop to Sonnet so I
 do not have to remember to `/model sonnet` first. The split is preserved:
 
-- The orchestration (PR resolve, qa-swarm decision, stamphog, summary) runs in
-  this command's loop, which `model: sonnet` pins to Sonnet.
+- The orchestration (PR resolve, quality-loop rounds, stamphog, summary) runs
+  in this command's loop, which `model: sonnet` pins to Sonnet.
 - Reviews keep their own pins regardless of the calling model — `qa-swarm` runs
   qa-team and security-audit on `fable`, paul-reviewer and xp-reviewer on
   `opus`.
-- `review-triage` and `ci-shepherd` already run as `model: sonnet` subagents.
+- `review-triage`, `ci-shepherd`, and `simplify` already run as `model: sonnet`
+  subagents (`simplify` via a wrapping Agent, since it's a built-in skill with
+  no body to load-then-spawn).
 
 For hands-off cadence: `/loop 5m /shepherd <pr>`.

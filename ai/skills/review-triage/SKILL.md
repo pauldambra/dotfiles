@@ -4,11 +4,13 @@ description: >
   Triages the review conversation on a PR: runs qa-swarm when there are
   substantive changes, classifies every unresolved review thread (qa-swarm,
   AI/bot, and human) as actionable / nit / ambiguous, applies the clear
-  single-file fixes, resolves nits with a reply, and defers ambiguous or
-  human-authored threads to a human. Use when the user
-  says "/review-triage", "triage the review comments", "deal with the bot
-  comments", or "address the review feedback". Accepts an optional PR number or
-  URL as argument. Does not touch the branch base or the stamphog label.
+  single-file fixes, resolves nits with a reply, runs ambiguous AI/bot threads
+  through paul-pair's autonomy ladder before deferring so only genuine
+  stop-and-ask cases reach a human, and always defers human-authored threads.
+  Use when the user says "/review-triage", "triage the review comments", "deal
+  with the bot comments", or "address the review feedback". Accepts an
+  optional PR number or URL as argument. Does not touch the branch base or the
+  stamphog label.
 ---
 
 # Review Triage
@@ -16,8 +18,11 @@ description: >
 Triages the review threads on a PR. Runs qa-swarm when there are substantive
 changes, classifies every unresolved review thread (qa-swarm, bot, and human),
 applies the fixes that are clear and localised, resolves nits with a short
-reply, and defers ambiguous or human-authored threads to a human. Does **not** restack the branch, watch CI, or manage the
-`stamphog` label — that is `ci-shepherd`'s and `pr-shepherd`'s job.
+reply, runs ambiguous AI/bot threads through `paul-pair`'s autonomy ladder
+before deferring (see *Judgement rules for auto-actioning a comment*), and
+always defers human-authored threads to a human. Does **not** restack the
+branch, watch CI, or manage the `stamphog` label — that is `ci-shepherd`'s and
+`pr-shepherd`'s job.
 
 ## Dual-mode — standalone vs `pr-shepherd` sub-step
 
@@ -221,8 +226,11 @@ Handle each class:
   a clipped suggestion.
 - **NIT:** resolve the thread with a one-line reply explaining why ("intentional
   — <reason>" / "out of scope — follow-up" / "disagree — <reason>").
-- **Ambiguous:** add thread id to `deferred_threads`. Do not resolve. Include in
-  the end-of-run report.
+- **Ambiguous:** before deferring, run it through the `paul-pair` gate (see
+  *Judgement rules for auto-actioning a comment*). If the gate promotes it to
+  just-do-it or recommend-and-ask, act on it and resolve the thread (count it
+  as `promoted`, not `deferred`). Only a genuine stop-and-ask adds the thread
+  id to `deferred_threads`, unresolved, included in the end-of-run report.
 
 To resolve a thread + reply:
 
@@ -275,7 +283,7 @@ user decides on the architectural questions in their own time.
 Step 3 handled the qa-swarm threads; this step accounts for **every remaining**
 unresolved, non-outdated thread from the same fetch (those whose body does not
 start with the qa-swarm header). **Nothing is silently skipped** — each thread
-ends in exactly one bucket: resolved, actioned, or deferred.
+ends in exactly one bucket: resolved, actioned, promoted, or deferred.
 
 Classify each thread by who authored its first comment:
 
@@ -288,7 +296,9 @@ Classify each thread by who authored its first comment:
   Claude review apps, and Dependabot. When a non-human account is posting
   structured line-level review feedback and you're unsure, treat it as a bot.
   Apply the Step 3 judgement rules: actionable -> fix; nit -> resolve with a
-  reply; ambiguous -> defer.
+  reply; ambiguous -> run the `paul-pair` gate before deferring, exactly as in
+  Step 3 — promoted cases get fixed and resolved, only genuine stop-and-ask
+  cases go to `deferred_threads`.
 - **Human** — a real person's review comment. **Never auto-fix or auto-resolve
   it** — they want a reply or a decision from the author, not a silent edit. Add
   it to `deferred_threads` and surface it in the report as human-authored.
@@ -325,15 +335,17 @@ small wait.
 **Standalone:** print a one-line summary —
 
 ```
-[triage] done — sha=<short_sha> qa-swarm=<ran|skip> resolved=<n> actioned=<n> deferred=<n>
+[triage] done — sha=<short_sha> qa-swarm=<ran|skip> resolved=<n> actioned=<n> promoted=<n> deferred=<n>
 ```
 
-Break `deferred` down by author, e.g. `deferred=5 (3 ambiguous bot, 2 human)`.
-The counts must **reconcile**: every unresolved non-outdated thread you fetched
-ends as resolved, actioned, or deferred — never seen-but-unhandled. List each
-deferred thread's author, `file:line`, and a one-line reason under the summary.
-Then hand back (the skill does not sleep or self-loop; wrap in `/loop` for
-cadence).
+`promoted` is the count of ambiguous threads the `paul-pair` gate resolved
+(just-do-it or recommend-and-ask) instead of deferring — see *Judgement rules
+for auto-actioning a comment*. Break `deferred` down by author, e.g.
+`deferred=5 (3 ambiguous bot, 2 human)`. The counts must **reconcile**: every
+unresolved non-outdated thread you fetched ends as resolved, actioned,
+promoted, or deferred — never seen-but-unhandled. List each deferred thread's
+author, `file:line`, and a one-line reason under the summary. Then hand back
+(the skill does not sleep or self-loop; wrap in `/loop` for cadence).
 
 **As a `pr-shepherd` sub-step:** end with exactly this structured result and
 nothing after it —
@@ -346,6 +358,7 @@ nothing after it —
   "qa_swarm_marker_sha": "<unchanged from input — the orchestrator owns the qa-swarm run>",
   "resolved": 0,
   "actioned": 0,
+  "promoted": 0,
   "deferred_threads": ["<id>"],
   "unresolved_actionable_remaining": false,
   "narration": ["<one [triage] line per step taken>"]
@@ -370,9 +383,40 @@ A thread is **actionable** only if **all** of these hold:
 - Applying it does not require new design decisions, new dependencies, or
   altering the PR's scope.
 
-Otherwise the thread is either a NIT (auto-resolve with reply) or **ambiguous**
-(defer to the user). When in doubt, defer — a nagging status line is cheaper
-than a wrong push.
+Otherwise the thread is either a NIT (auto-resolve with reply) or **ambiguous**.
+
+### The paul-pair gate — before deferring an ambiguous AI/bot thread
+
+An ambiguous thread is not automatically a deferral. Resolve `paul-pair`
+local-first, then the store (same pattern as `qa-swarm` — see *Dependencies*),
+and apply its autonomy ladder to the thread's suggested change:
+
+- **Just do it** — the outcome is unambiguously better and there's essentially
+  one sensible way to get there (a trivial, reversible improvement). Apply the
+  fix, commit, push, resolve the thread with the normal actionable-style reply.
+  Count it as `promoted`, not `deferred`.
+- **Do it, but recommend and ask** — more than one reasonable solution exists.
+  Make the call, apply it, commit, push, resolve the thread — but the reply
+  must also state the one-line reasoning and the alternative considered (e.g.
+  "did X because Y — alternative was Z, shout if you'd rather Z"). Count it as
+  `promoted`. Surface these prominently in the report/narration (not folded
+  silently into a bare count) so the human can redirect cheaply if they'd
+  rather the alternative.
+- **Stop and ask** — it would violate one of the four rules of simple design,
+  or it's genuinely unclear which outcome is better. This is the only outcome
+  that still adds the thread to `deferred_threads`, unresolved.
+
+This gate applies to ambiguous **qa-swarm and bot** threads only (Steps 3-4).
+It never applies to the human-authored bucket — those are always deferred,
+never auto-fixed, regardless of how trivial the change looks; that rule
+protects the human review conversation, which is a different concern from
+judging a fix's difficulty.
+
+**Invariant: an AI/bot-authored thread that has been addressed always ends
+resolved with a reply.** The only threads left open are genuine stop-and-ask
+(paul-pair-confirmed) and human-authored. When in doubt about whether a fix is
+safe to apply at all, that doubt itself is the stop-and-ask signal — a
+nagging status line is cheaper than a wrong push.
 
 ## Terminal conditions (standalone only)
 
@@ -393,6 +437,9 @@ Ambiguous review findings are **not** a terminal condition; they go to
   store: run `Skill("qa-swarm")` if installed, else `llma-skill-get` its body and
   follow it inline. qa-swarm itself owns loading each reviewer's body. (Standalone
   only; as a `pr-shepherd` sub-step the orchestrator runs qa-swarm.)
+- **`paul-pair`** — autonomy-ladder gate applied to ambiguous qa-swarm/bot
+  threads before deferring (see *The paul-pair gate*), resolved local-first
+  then from the PostHog skill store, same pattern as `qa-swarm`.
 - `gh` CLI (repo, pr, api commands).
 - Graphite MCP for git operations (commit/push for fixes). Fall back to
   `gh`/`git` only when Graphite doesn't cover a case.
@@ -401,6 +448,9 @@ Ambiguous review findings are **not** a terminal condition; they go to
 
 - **qa-swarm skill missing:** warn and continue — still triage the bot threads
   (Step 4). The skill still provides value without a fresh qa-swarm run.
+- **paul-pair skill missing:** warn and skip the gate — treat every ambiguous
+  thread as stop-and-ask (defer), the safer fallback when the ladder isn't
+  available to consult.
 - **No PR detected (standalone):** print a short note asking the user to pass a
   PR number or URL, then stop.
 - **User interrupts mid-run:** stop at the next natural checkpoint and print the
