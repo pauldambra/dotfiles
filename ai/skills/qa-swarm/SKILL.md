@@ -304,28 +304,42 @@ For convergent findings (flagged by 2+ reviewers independently):
 <merged finding body>
 ```
 
-#### 5b: Summary comment
+#### 5b: Summary comment — one sticky comment per PR, upserted
 
-Post a single top-level PR comment with the overall report:
+qa-swarm maintains exactly **one** top-level summary comment per PR, marked
+with `<!-- qa-swarm-summary -->`. Re-runs (re-review rounds, later shepherd
+iterations) **update that comment in place** instead of posting a new one —
+multiple bot comments per PR is exactly the noise this repo is trying to kill.
+The comment always shows the LATEST verdict; earlier rounds collapse into a
+`<details>` history block so the audit trail survives without the length.
+
+First find any existing summary comment:
 
 ```bash
-gh pr comment {pr_number} --body "$(cat <<'EOF'
+gh api "repos/{owner}/{repo}/issues/{pr_number}/comments" --paginate \
+  --jq '[.[] | select(.body | contains("<!-- qa-swarm-summary -->"))][0].id'
+```
+
+Build the body in this shape (current verdict on top, prior rounds folded):
+
+```markdown
+<!-- qa-swarm-summary -->
 > [!NOTE]
 > 🤖 Automated comment by **QA Swarm** — not written by a human
 >
 > Multi-perspective review: qa-team (specialists + generalists), paul-reviewer, xp-reviewer, security-audit
 
-## Verdict: <emoji> <VERDICT>
+## Verdict: <emoji> <VERDICT> <sub>(round <N> @ <short_sha>)</sub>
 
 <1-2 sentences explaining the verdict>
 
 ### Key findings
 
-<bulleted list of the top findings, grouped by severity>
+<bulleted list of the top findings, grouped by severity — current round only>
 
 ### Convergence
 
-<list any findings flagged independently by 2+ reviewers — these are highest confidence>
+<findings flagged independently by 2+ reviewers — these are highest confidence>
 
 ### Reviewer summaries
 
@@ -336,11 +350,32 @@ gh pr comment {pr_number} --body "$(cat <<'EOF'
 | 📐 xp | <1 sentence> |
 | 🛡 security-audit | <1 sentence> |
 
+<details>
+<summary>Previous rounds (<n>)</summary>
+
+<for each prior round, one compact line: `round <N> @ <short_sha> — <verdict>: <1-line disposition>`.
+When updating, derive these lines from the existing comment's current-verdict
+header plus its own history block — the previous round's detail collapses to
+one line, it is not carried verbatim.>
+
+</details>
+
 ---
 *Automated by QA Swarm — not a human review*
 EOF
-)"
 ```
+
+If a comment id was found, update in place; otherwise create:
+
+```bash
+# update
+gh api "repos/{owner}/{repo}/issues/comments/{comment_id}" -X PATCH -F body=@/tmp/qa-summary.md
+# create (no existing comment)
+gh pr comment {pr_number} --body-file /tmp/qa-summary.md
+```
+
+The inline review comments from 5a are unaffected — they are threaded,
+per-finding, and resolvable. Only the top-level summary is deduplicated.
 
 ### Graceful degradation
 

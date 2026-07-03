@@ -19,13 +19,38 @@ Also... it means we work in three stages
 
 We should always pause and consider if the working code should be improved to make it simpler or to make it faster, but only once we're sure it works
 
+There is no such thing as "pre-existing failures that we don't need to fix"
+The decision is always if we fix them in this piece of work or open a quick PR specific to the fix.
+
+* changes that align with our current work: fix in the current PR
+* very small off-topic changes: open them in their own PR
+* very large changes: open a separate PR, stacking as necessary
+
+The work of software engineering is to keep the software buildable, workable, maintainable, and valuable.
+
+# delegation
+
+For all coding tasks use your judgement to decide if there is an appropriate lower power model and run that in a subagent
+
+fable can use its own judgement on whether to delegate to any model. opus can choose to delegate implementation to sonnet.
+
 # tests
 
-* IMPORTANT prefer parameterized tests
+i prefer TDD
+
+i don't try to test everything. weigh the value of a test against the speed of testing at that layer.
+
+tests are about protecting future changes as much as validating the current change. every test answers three questions:
+
+* do i know the code does not already do this?
+* will i know it does it when i am finished?
+* will i know it still does it tomorrow?
+
+IMPORTANT: prefer parameterized tests
 
 # comments
 
-i _never_ want comments in code. every time we see a comment we ask
+every time we see a comment we ask
 
 * should this be a rename refactoring
 * should this be an extract method refactoring
@@ -35,10 +60,6 @@ comments are visual noise when they only duplicate information that is present i
 often applying the simplicity rules removes them
 
 NOTE: never remove comments that are already present in the code, only edit comments you have added
-
-# commits
-
-never offer to commit code for me
 
 # graphite
 
