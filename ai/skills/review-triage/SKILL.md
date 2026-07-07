@@ -4,25 +4,31 @@ description: >
   Triages the review conversation on a PR: runs qa-swarm when there are
   substantive changes, classifies every unresolved review thread (qa-swarm,
   AI/bot, and human) as actionable / nit / ambiguous, applies the clear
-  single-file fixes, resolves nits with a reply, runs ambiguous AI/bot threads
-  through paul-pair's autonomy ladder before deferring so only genuine
-  stop-and-ask cases reach a human, and always defers human-authored threads.
-  Use when the user says "/review-triage", "triage the review comments", "deal
-  with the bot comments", or "address the review feedback". Accepts an
-  optional PR number or URL as argument. Does not touch the branch base or the
-  stamphog label.
+  single-file fixes, resolves nits silently (reasons go in the report), runs
+  ambiguous AI/bot threads through paul-pair's autonomy ladder before
+  deferring so only genuine stop-and-ask cases reach a human, and defers any
+  thread with human participation. It never posts thread replies — responses
+  to humans always come from the PR author. Use when the user says
+  "/review-triage", "triage the review comments", "deal with the bot
+  comments", or "address the review feedback". Accepts an optional PR number
+  or URL as argument. Does not touch the branch base or the stamphog label.
 ---
 
 # Review Triage
 
 Triages the review threads on a PR. Runs qa-swarm when there are substantive
 changes, classifies every unresolved review thread (qa-swarm, bot, and human),
-applies the fixes that are clear and localised, resolves nits with a short
-reply, runs ambiguous AI/bot threads through `paul-pair`'s autonomy ladder
-before deferring (see *Judgement rules for auto-actioning a comment*), and
-always defers human-authored threads to a human. Does **not** restack the
+applies the fixes that are clear and localised, resolves nits silently, runs
+ambiguous AI/bot threads through `paul-pair`'s autonomy ladder before
+deferring (see *Judgement rules for auto-actioning a comment*), and always
+defers threads with human participation to a human. Does **not** restack the
 branch, watch CI, or manage the `stamphog` label — that is `ci-shepherd`'s and
 `pr-shepherd`'s job.
+
+**This skill never posts a comment to GitHub.** It never replies to a thread —
+not to a human's (responses to humans always come from the PR author), not to
+another bot's, not to its own. Bot threads it acts on are resolved silently;
+the reasoning lives in the run report and narration instead of in-thread.
 
 ## Dual-mode — standalone vs `pr-shepherd` sub-step
 
@@ -41,41 +47,6 @@ This skill runs in two modes. **Standalone is the default.**
   `narration` array and end with the single structured result in *Step 5*.
 
 GitHub is the source of truth, so either mode is safely restartable.
-
-## Bot identifier — REQUIRED on every posted comment
-
-Every comment this skill posts to GitHub (thread replies when resolving,
-fix-notification replies — **every single one**) must begin with the
-bot-identifier header so a human reader can tell at a glance that it was not
-written by a person:
-
-```markdown
-> [!NOTE]
-> 🤖 Automated comment by **Review Triage** — not written by a human
-```
-
-Apply this header as the first lines of the comment body, before any other
-content. Do not skip it. Example reply when resolving a NIT:
-
-```markdown
-> [!NOTE]
-> 🤖 Automated comment by **Review Triage** — not written by a human
-
-Intentional — matches the convention used elsewhere in this file.
-```
-
-Example reply when posting a fix:
-
-```markdown
-> [!NOTE]
-> 🤖 Automated comment by **Review Triage** — not written by a human
-
-Fixed in `abc1234` — renamed `foo` to `bar` in `src/foo.ts`.
-```
-
-On public repositories (e.g. PostHog/posthog), never put absolute production
-counts — raw event, user, or revenue numbers — in a reply. Cite percentages or
-ratios instead; the repo is public and absolute counts leak operational scale.
 
 ## Narration — keep the user in the loop
 
@@ -197,16 +168,42 @@ gh api graphql -f query='
           first_comment_id: .comments.nodes[0].databaseId,
           body_head: (.comments.nodes[0].body[:1500]),
           body_truncated: ((.comments.nodes[0].body | length) > 1500),
-          reply_count: ((.comments.nodes | length) - 1)
+          reply_count: ((.comments.nodes | length) - 1),
+          participants: ([.comments.nodes[]
+            | {login: .author.login, type: .author.__typename,
+               automated: (.body[:200] | contains("🤖 Automated comment by"))}]
+            | unique)
         }
     ]'
 ```
+
+#### Human participation makes the whole thread human
+
+Classify every comment in a thread, not just its first. A comment is
+**automated** if either:
+
+- its author is a bot account — `type == "Bot"`, login ends with `[bot]`, or
+  login matches the known review-bot list in Step 4 (greptile, veria,
+  coderabbit, cursor, sonarcloud, codescene, sourcery, ellipsis,
+  stamphog/posthog-code, Claude review apps, Dependabot), **or**
+- its body carries the `🤖 Automated comment by` header (the `automated` flag
+  in the jq above). This is the load-bearing check for our own comments:
+  qa-swarm and past review-triage runs post through the PR author's own
+  account (typed `User`), so the header — not the account — is what marks
+  them as bot-authored.
+
+If **any** comment is neither — a real person authored the thread or replied
+in it — the thread is **human**: defer it (no fix, no resolve, no reply),
+whatever the first comment's author was. A human replying in a bot thread has
+joined the conversation, and responses to humans always come from the PR
+author. If you can't confidently classify a comment, treat it as human.
 
 For each returned thread where `body_head` contains
 `🤖 Automated comment by **QA Swarm**` and thread id is not in
 `deferred_threads`:
 
-Classify the thread body:
+First apply the human-participation gate above — a qa-swarm thread a human has
+replied in is deferred, untouched. Otherwise classify the thread body:
 
 - **Actionable & clear** — concrete single-file fix, severity HIGH or
   CRITICAL (convergent findings count as higher confidence), scope tight and
@@ -220,33 +217,23 @@ Handle each class:
 
 - **Actionable:** apply the edit with `Edit`/`Write`, stage via Graphite MCP,
   commit with a message like `fix: address qa-swarm <short description>`, push
-  via Graphite MCP, then resolve the thread and leave a short reply noting the
-  commit SHA. If `body_truncated == true` for this thread, refetch the full body
-  first (see *Refetch full body before acting* below) so the fix isn't based on
-  a clipped suggestion.
-- **NIT:** resolve the thread with a one-line reply explaining why ("intentional
-  — <reason>" / "out of scope — follow-up" / "disagree — <reason>").
+  via Graphite MCP, then resolve the thread — no reply; the commit SHA and a
+  one-line description go in the narration and report. If `body_truncated ==
+  true` for this thread, refetch the full body first (see *Refetch full body
+  before acting* below) so the fix isn't based on a clipped suggestion.
+- **NIT:** resolve the thread — no reply; record the one-line reason
+  ("intentional — <reason>" / "out of scope — follow-up" / "disagree —
+  <reason>") in the report's per-thread lines.
 - **Ambiguous:** before deferring, run it through the `paul-pair` gate (see
   *Judgement rules for auto-actioning a comment*). If the gate promotes it to
   just-do-it or recommend-and-ask, act on it and resolve the thread (count it
   as `promoted`, not `deferred`). Only a genuine stop-and-ask adds the thread
   id to `deferred_threads`, unresolved, included in the end-of-run report.
 
-To resolve a thread + reply:
-
-`<reply_body>` MUST begin with the bot-identifier header — no exceptions,
-including for NITs and ambiguous replies. See *Bot identifier — REQUIRED on
-every posted comment* above.
+To resolve a thread (never reply — resolving is the only mutation this skill
+performs on a thread):
 
 ```bash
-# reply
-gh api graphql -f query='
-  mutation($thread_id:ID!, $body:String!) {
-    addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$thread_id, body:$body}) {
-      comment { id }
-    }
-  }' -F thread_id=<id> -F body=<reply_body>
-
 # resolve
 gh api graphql -f query='
   mutation($thread_id:ID!) {
@@ -285,28 +272,32 @@ unresolved, non-outdated thread from the same fetch (those whose body does not
 start with the qa-swarm header). **Nothing is silently skipped** — each thread
 ends in exactly one bucket: resolved, actioned, promoted, or deferred.
 
-Classify each thread by who authored its first comment:
+Classify each thread by its participants (see *Human participation makes the
+whole thread human* in Step 3):
 
-- **Review bot** — `author.__typename == "Bot"`, `author.login` ends with
-  `[bot]`, **or** a known review-bot login. The typename check alone is **not**
-  enough: many review bots post through plain **user** accounts typed `User`,
-  not `Bot` (this is exactly why Greptile and Veria inline comments get missed).
-  Also match logins containing `greptile`, `veria`, `coderabbit`, `cursor`,
-  `sonarcloud`, `codescene`, `sourcery`, `ellipsis`, plus stamphog/posthog-code,
-  Claude review apps, and Dependabot. When a non-human account is posting
-  structured line-level review feedback and you're unsure, treat it as a bot.
-  Apply the Step 3 judgement rules: actionable -> fix; nit -> resolve with a
-  reply; ambiguous -> run the `paul-pair` gate before deferring, exactly as in
-  Step 3 — promoted cases get fixed and resolved, only genuine stop-and-ask
-  cases go to `deferred_threads`.
-- **Human** — a real person's review comment. **Never auto-fix or auto-resolve
-  it** — they want a reply or a decision from the author, not a silent edit. Add
-  it to `deferred_threads` and surface it in the report as human-authored.
-  (Standalone, you may offer a trivial, obviously-correct fix via
-  `AskUserQuestion`; as a `pr-shepherd` sub-step, just defer.)
+- **Review bot** — every comment in the thread is automated per Step 3's
+  participation rule (bot account or `🤖 Automated comment by` header). The
+  typename check alone is **not** enough: many review bots post through plain
+  **user** accounts typed `User`, not `Bot` (this is exactly why Greptile and
+  Veria inline comments get missed) — match logins containing `greptile`,
+  `veria`, `coderabbit`, `cursor`, `sonarcloud`, `codescene`, `sourcery`,
+  `ellipsis`, plus stamphog/posthog-code, Claude review apps, and Dependabot.
+  Apply the Step 3 judgement rules: actionable -> fix and resolve; nit ->
+  resolve, reason in the report; ambiguous -> run the `paul-pair` gate before
+  deferring, exactly as in Step 3 — promoted cases get fixed and resolved,
+  only genuine stop-and-ask cases go to `deferred_threads`. Never reply —
+  other bots' threads get the same silent resolve as qa-swarm's.
+- **Human** — any participant is a real person, whether they opened the thread
+  or replied in it. **Never auto-fix, auto-resolve, or reply** — they want a
+  response or a decision from the author, not a silent edit and not a bot
+  reply. Add it to `deferred_threads` and surface it in the report as
+  human-participated. (Standalone, you may offer a trivial, obviously-correct
+  fix via `AskUserQuestion` — but even an approved fix gets no reply and no
+  resolve: push the fix, leave the thread open, and report "fixed in <sha>,
+  thread left open for your reply". As a `pr-shepherd` sub-step, just defer.)
 
-If you can't confidently place an author, **defer rather than ignore** — a
-surfaced thread is recoverable, a dropped one is not.
+If you can't confidently place a participant, treat them as human and **defer
+rather than ignore** — a surfaced thread is recoverable, a dropped one is not.
 
 > A stamphog "approval dismissed" comment is a protocol signal, not a review
 > thread — ignore it (don't reply, resolve, or treat it as actionable). Triage
@@ -344,8 +335,10 @@ for auto-actioning a comment*. Break `deferred` down by author, e.g.
 `deferred=5 (3 ambiguous bot, 2 human)`. The counts must **reconcile**: every
 unresolved non-outdated thread you fetched ends as resolved, actioned,
 promoted, or deferred — never seen-but-unhandled. List each deferred thread's
-author, `file:line`, and a one-line reason under the summary. Then hand back
-(the skill does not sleep or self-loop; wrap in `/loop` for cadence).
+author, `file:line`, and a one-line reason under the summary, and each
+resolved thread's `file:line` with the reason or commit SHA — since resolves
+carry no reply, the report is the only audit trail. Then hand back (the skill
+does not sleep or self-loop; wrap in `/loop` for cadence).
 
 **As a `pr-shepherd` sub-step:** end with exactly this structured result and
 nothing after it —
@@ -383,7 +376,8 @@ A thread is **actionable** only if **all** of these hold:
 - Applying it does not require new design decisions, new dependencies, or
   altering the PR's scope.
 
-Otherwise the thread is either a NIT (auto-resolve with reply) or **ambiguous**.
+Otherwise the thread is either a NIT (auto-resolve, reason in the report) or
+**ambiguous**.
 
 ### The paul-pair gate — before deferring an ambiguous AI/bot thread
 
@@ -393,11 +387,11 @@ and apply its autonomy ladder to the thread's suggested change:
 
 - **Just do it** — the outcome is unambiguously better and there's essentially
   one sensible way to get there (a trivial, reversible improvement). Apply the
-  fix, commit, push, resolve the thread with the normal actionable-style reply.
-  Count it as `promoted`, not `deferred`.
+  fix, commit, push, resolve the thread (no reply — commit SHA and description
+  in the report). Count it as `promoted`, not `deferred`.
 - **Do it, but recommend and ask** — more than one reasonable solution exists.
-  Make the call, apply it, commit, push, resolve the thread — but the reply
-  must also state the one-line reasoning and the alternative considered (e.g.
+  Make the call, apply it, commit, push, resolve the thread — and the report
+  entry must state the one-line reasoning and the alternative considered (e.g.
   "did X because Y — alternative was Z, shout if you'd rather Z"). Count it as
   `promoted`. Surface these prominently in the report/narration (not folded
   silently into a bare count) so the human can redirect cheaply if they'd
@@ -407,23 +401,24 @@ and apply its autonomy ladder to the thread's suggested change:
   that still adds the thread to `deferred_threads`, unresolved.
 
 This gate applies to ambiguous **qa-swarm and bot** threads only (Steps 3-4).
-It never applies to the human-authored bucket — those are always deferred,
+It never applies to the human-participated bucket — those are always deferred,
 never auto-fixed, regardless of how trivial the change looks; that rule
 protects the human review conversation, which is a different concern from
 judging a fix's difficulty.
 
-**Invariant: an AI/bot-authored thread that has been addressed always ends
-resolved with a reply.** The only threads left open are genuine stop-and-ask
-(paul-pair-confirmed) and human-authored. When in doubt about whether a fix is
-safe to apply at all, that doubt itself is the stop-and-ask signal — a
-nagging status line is cheaper than a wrong push.
+**Invariant: an all-bot thread that has been addressed always ends resolved —
+silently; this skill never posts a thread reply.** The only threads left open
+are genuine stop-and-ask (paul-pair-confirmed) and anything with human
+participation. When in doubt about whether a fix is safe to apply at all,
+that doubt itself is the stop-and-ask signal — a nagging status line is
+cheaper than a wrong push.
 
 ## Terminal conditions (standalone only)
 
 Stop cleanly and print the report when **any** of:
 
 - PR is `MERGED` or `CLOSED`.
-- Every unresolved thread has been classified and handled (fixed, replied, or
+- Every unresolved thread has been classified and handled (fixed, resolved, or
   deferred) — nothing autonomous left to do.
 - The user interrupts.
 

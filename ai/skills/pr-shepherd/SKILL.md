@@ -455,7 +455,8 @@ on.
 The final summary lists:
 
 - commits pushed (with short SHAs and messages),
-- threads resolved (count, grouped by "fixed" / "replied"),
+- threads resolved (count, grouped by "fixed" / "nit", each with the reason or
+  commit SHA — resolves carry no reply, so this is the only audit trail),
 - threads deferred (with file:line and one-line reason each),
 - final CI state, stamphog verdict, label state, and PR merge state.
 
