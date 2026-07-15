@@ -28,11 +28,30 @@ The decision is always if we fix them in this piece of work or open a quick PR s
 
 The work of software engineering is to keep the software buildable, workable, maintainable, and valuable.
 
+## Context efficiency
+
+- Search with `rg` or `rg --files` before reading files.
+- Check file length before reading an unfamiliar file.
+- Read targeted line ranges with `sed -n`, not whole files.
+- Limit initial reads to 200 lines.
+- Never use `cat` on source or log files longer than 300 lines.
+- Expand the range only when the current excerpt is insufficient.
+- Prefer `git diff`, `git show --stat`, and targeted symbol searches.
+- Read an entire file only when its full structure is necessary.
+
+## Token efficiency
+
+- Prefer targeted reads, searches, diffs, and tests.
+- Keep command output brief; inspect only relevant failures.
+- Never print large logs, generated files, snapshots, or lockfiles.
+- Do not reread unchanged content or repeat completed work.
+- Delegate only independent work that benefits from parallelism.
+- Give subagents narrow scopes and request concise results.
+- Start a new session when switching to an unrelated task.
+
 # delegation
 
-For all coding tasks use your judgement to decide if there is an appropriate lower power model and run that in a subagent
-
-fable can use its own judgement on whether to delegate to any model. opus can choose to delegate implementation to sonnet.
+Prefer completing straightforward work in the primary agent. Delegate only independent work where parallelism outweighs the additional context and coordination cost.
 
 # tests
 
