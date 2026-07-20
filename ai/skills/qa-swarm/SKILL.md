@@ -1,11 +1,13 @@
 ---
 name: qa-swarm
 description: >
-  Orchestrates four review skills (qa-team, paul-reviewer, xp-reviewer,
-  security-audit) into a single comprehensive PR review with inline GitHub
-  comments. Use when the user asks for "qa-swarm", "swarm review", or wants a
-  full multi-perspective review posted to their PR. Accepts an optional PR
-  number or base branch as argument.
+  Orchestrates a cheap-first PR review: a single router reviewer (GLM-5.2)
+  does the first pass and delegates to stronger models (qa-team,
+  paul-reviewer, xp-reviewer, security-audit on opus/fable/gpt-sol/kimi-k3)
+  only for the parts it judges complex or dangerous, posting findings as
+  inline GitHub comments. Use when the user asks for "qa-swarm", "swarm
+  review", or wants a multi-perspective review posted to their PR. Accepts an
+  optional PR number or base branch as argument.
 ---
 
 # QA Swarm: Multi-Perspective PR Review
@@ -65,13 +67,16 @@ branch, changed file list, full diff, commit log, and HEAD SHA.
 
 ### Step 2: Load skill content
 
-Load the four reviewer bodies. qa-team is on disk; paul-reviewer and xp-reviewer
-resolve local-first then from the PostHog skill store; security-audit is
-store-only. If any reviewer's content is unavailable (not on disk or in the
-store), warn the user and skip that reviewer — the others still run.
+Load the four reviewer bodies up front so they're ready if the router
+delegates to them. qa-team is on disk; paul-reviewer and xp-reviewer resolve
+local-first then from the PostHog skill store; security-audit is store-only.
+If any reviewer's content is unavailable (not on disk or in the store), warn
+the user and mark it unavailable — the router will route around it (see
+*Graceful degradation*).
 
 Issue all four loads in **parallel** (single message, four tool calls) so the
-MCP round-trip does not serialize with the on-disk reads.
+MCP round-trip does not serialize with the on-disk reads. The router (Step 3a)
+runs on GLM-5.2 and has no body to load — it's a direct prompt.
 
 **qa-team** (try these paths in order, stop at first hit):
 1. `<repo_root>/.agents/skills/qa-team/SKILL.md` (use `git rev-parse --show-toplevel`)
@@ -105,54 +110,135 @@ mcp__posthog__exec command="call llma-skill-get {\"skill_name\": \"security-audi
 
 The response's `body` field is the full skill markdown. Store it as
 `security_audit_body`. If the call errors, times out, or the MCP server is
-unavailable, log `security-audit: skip (MCP unavailable)` and continue with
-the other three reviewers.
+unavailable, log `security-audit: skip (MCP unavailable)` and mark it
+unavailable — the router won't be able to delegate to it.
 
-### Step 3: Launch 4 review agents in parallel
+### Step 3: Cost-aware review — router pass, then conditional delegation
 
-Launch ALL agents in a **single message** with multiple Agent tool calls so
-they run in true parallel.
+Review is the reasoning-heavy, expensive part of the loop. The previous fixed
+split (fable for qa-team/security, opus for paul/xp — always four agents) was
+sharp but costly. The new default is **cheap-first**: a single router reviewer
+does the first pass on the cheapest available model, then delegates to a
+stronger model only for the parts it judges complex or dangerous. Running the
+review more than once with different models is explicitly fine when it lowers
+overall cost — a cheap pass to screen, then a strong pass only on what
+survived.
 
-Pin each reviewer's model explicitly on its Agent call rather than inheriting
-the session/caller model — review is the reasoning-heavy part of the loop and
-must stay sharp even when the caller (e.g. pr-shepherd's runner) is on a
-cheaper model. The split:
+#### Model roster
 
-- **qa-team and security-audit: `model: 'fable'`** — the technical-depth
-  reviewers get the strongest model.
-- **paul-reviewer and xp-reviewer: `model: 'opus'`** — voice/style reviewers;
-  fable's 2x per-token cost isn't warranted there.
+- **Router (cheap):** `@cf/zai-org/glm-5.2` — the entry reviewer. Pin it
+  explicitly on the router Agent. If the harness rejects the non-Claude model
+  string, **omit `model`** so the router inherits the session model, and run
+  the shepherd session on glm-5.2 (`/model @cf/zai-org/glm-5.2`) so
+  inheritance lands on glm-5.2. Either path gives a cheap first pass. If
+  glm-5.2 is unavailable at all, fall back to `sonnet` for the router.
+- **Delegation targets (stronger), the router's choice** — pick the least
+  expensive target that can cover the concern; reserve the deepest for when
+  the cheaper tier wouldn't catch it:
+  - `opus` — voice/style/logic lens (paul-reviewer, xp-reviewer). Claude
+    enum, always pinnable.
+  - `fable` — deepest technical lens (qa-team specialists, security-audit).
+    Claude enum, always pinnable. If the harness rejects `'fable'` (older
+    Claude Code), fall back to `'opus'` for that agent.
+  - `gpt-sol` — soon; another strong option for the opus lenses. When its
+    pin string is known and accepted, the router may choose it; otherwise it
+    falls back to `opus`.
+  - `kimi-k3` — soon; another deep option for the fable lenses; falls back
+    to `fable` when not pinnable.
 
-If the harness rejects `'fable'` (older Claude Code), fall back to `'opus'`
-for that agent.
+#### 3a. Router pass
 
-Each agent is told it is the sole reviewer. Each must return findings in the
-structured format described in "Agent output format" below.
+Dispatch ONE router agent on the router model. Pass it the diff, the
+changed-file list, and the commit log. Tell it:
 
-#### Agent 1: qa-team
+- You are the sole first-pass reviewer. Review the full diff for
+  correctness, bugs, security, and style. Read surrounding code context for
+  each change (at least 50 lines above/below) before judging.
+- After reviewing, assess the change's **danger/complexity** (blast
+  radius): LOW / MEDIUM / HIGH / CRITICAL, using the rubric below.
+- Decide whether to **delegate** part or all of the review to a stronger
+  model, and if so which model + which reviewer lens + which scope.
+  Minimise cost: delegate only what your own pass can't safely cover, scoped
+  to the concerning files/hunks. Delegating nothing (low danger, high
+  confidence) is the cheap path working as intended — do not pad the plan.
+- Return your own findings in STRUCTURED_FINDINGS form, then a
+  DELEGATION_PLAN block.
+
+**Danger rubric** — any of these raises blast radius and pushes toward
+delegation:
+
+- Touches auth, authorization, session, secrets, or crypto.
+- Touches data ingestion, migration, schema, or destructive DB writes.
+- Touches concurrency, locking, or shared mutable state.
+- Touches billing, payments, or anything with direct revenue / blast impact.
+- Diff is large (>~400 lines) or spans many files with non-obvious
+  cross-file effects.
+- Uses patterns you are uncertain about (unfamiliar framework, subtle async,
+  off-by-one-prone loops).
+- You found a HIGH/CRITICAL finding you want a stronger model to confirm.
+
+**Delegation plan format** (router returns this after its OVERALL_SUMMARY):
+
+```
+DELEGATION_PLAN:
+danger: <LOW|MEDIUM|HIGH|CRITICAL>
+confidence: <HIGH|MEDIUM|LOW>
+delegations:
+- model: <opus|fable|gpt-sol|kimi-k3> | reviewer: <qa-team|paul-reviewer|xp-reviewer|security-audit|general> | scope: <file paths / hunks / "full"> | reason: <one line>
+...
+(empty list if no delegation)
+```
+
+If `delegations` is empty, skip 3b — the router's findings ARE the review.
+This is the cheap default and the common case for small, low-danger diffs.
+
+#### 3b. Delegation pass (only when the router delegated)
+
+For each entry in the delegation plan, dispatch the named reviewer on the
+chosen model, scoped to the entry's `scope`. Run independent delegations in
+parallel (single message, multiple Agent calls) so they run in true parallel.
+Each returns STRUCTURED_FINDINGS.
+
+The four subsections below are the **delegation targets** — their prompt
+shapes, reused verbatim when the router delegates to that reviewer. Pin the
+chosen model on each Agent (opus/fable directly; gpt-sol/kimi-k3 when
+pinnable, else their Claude fallback). Scope the diff material you pass to
+each reviewer to its `scope` rather than the whole PR diff. Each delegated
+reviewer is told it is the sole reviewer for its scope — no mention of other
+reviewers or the router (same independence rule as before).
+
+Multi-pass is allowed: if a delegation's findings suggest a different lens
+would help, the router may issue a second delegation to a different model.
+Cap total delegations at 6 as a backstop.
+
+Each reviewer must return findings in the structured format described in
+"Reviewer output format" below.
+
+#### Reviewer target 1: qa-team
 
 Pass the full qa-team SKILL.md content into the agent prompt, but tell it the
 diff is already gathered (skip its Step 1). Include the personas and incident
 patterns inline in the prompt. The agent follows the qa-team workflow from
-Step 2 onward (classify files, launch its own sub-agents, synthesize).
+Step 2 onward (classify files, launch its own sub-agents, synthesize). When
+delegated from the router, restrict its scope to the delegation's `scope`.
 
 Tell it to return its final findings list (not the QAREPORT.md file) in the
 structured output format below, with `reviewer` tags like `qa-team/security`,
 `qa-team/database`, etc.
 
-#### Agent 2: paul-reviewer
+#### Reviewer target 2: paul-reviewer
 
 Pass the full paul-reviewer SKILL.md content and real-review-examples into the
-agent prompt, along with the diff. Tell it to review the diff in Paul's voice
-and return structured findings with `reviewer: paul`.
+agent prompt, along with the diff (scoped when delegated). Tell it to review
+the diff in Paul's voice and return structured findings with `reviewer: paul`.
 
-#### Agent 3: xp-reviewer
+#### Reviewer target 3: xp-reviewer
 
 Pass the full xp-reviewer SKILL.md content and c2wiki-wisdom into the agent
-prompt, along with the diff. Tell it to review the diff in the XP voice and
-return structured findings with `reviewer: xp`.
+prompt, along with the diff (scoped when delegated). Tell it to review the
+diff in the XP voice and return structured findings with `reviewer: xp`.
 
-#### Agent 4: security-audit
+#### Reviewer target 4: security-audit
 
 Skip this agent if `security_audit_body` is unset (MCP fetch failed in
 Step 2).
@@ -176,7 +262,7 @@ prompt must override the sections that do not apply in a qa-swarm context:
   reproducer tests. This is a PR-review context, not a local-branch audit."
 
 Tell the agent to return findings in qa-swarm's `STRUCTURED_FINDINGS` format
-(see "Agent output format" below) with these mappings:
+(see "Reviewer output format" below) with these mappings:
 
 - `reviewer:` tag is `security-audit/<category>` where `<category>` is the
   finding's lowercased, hyphenated `Category` field (e.g.
@@ -202,11 +288,12 @@ Tell the agent to return findings in qa-swarm's `STRUCTURED_FINDINGS` format
   comment.
 
 If the agent has no findings, return the `(none)` form described in the
-"Agent output format" section below.
+"Reviewer output format" section below.
 
-#### Agent output format
+#### Reviewer output format
 
-Every agent must end its response with findings in this exact format:
+Every reviewer (router and any delegation target) must end its response with
+findings in this exact format:
 
 ```
 STRUCTURED_FINDINGS:
@@ -230,13 +317,15 @@ OVERALL_SUMMARY:
 
 ### Step 4: Synthesize
 
-Collect all findings from the four agents.
+Collect the router's findings and any delegated reviewers' findings.
 
 **Deduplication:** If multiple reviewers flagged the same file+line (within 5
 lines) or clearly the same concern, merge them into a single finding. Note the
 convergence — convergent findings carry higher confidence.
 
-**Verdict** (using qa-team risk scoring if the qa-team agent ran):
+**Verdict** (using qa-team risk scoring if the qa-team reviewer ran —
+otherwise apply the same tiers to whatever findings the router and
+delegations produced):
 - CRITICAL: Any CRITICAL finding → overall CRITICAL
 - HIGH: 2+ HIGH findings, or 1 HIGH + 2 MEDIUM → overall HIGH
 - MEDIUM: 1 HIGH, or 3+ MEDIUM → overall MEDIUM
@@ -327,7 +416,7 @@ Build the body in this shape (current verdict on top, prior rounds folded):
 > [!NOTE]
 > 🤖 Automated comment by **QA Swarm** — not written by a human
 >
-> Multi-perspective review: qa-team (specialists + generalists), paul-reviewer, xp-reviewer, security-audit
+> Multi-perspective review: router (cheap-first pass) + delegated reviewers (qa-team, paul-reviewer, xp-reviewer, security-audit as warranted)
 
 ## Verdict: <emoji> <VERDICT> <sub>(round <N> @ <short_sha>)</sub>
 
@@ -345,10 +434,8 @@ Build the body in this shape (current verdict on top, prior rounds folded):
 
 | Reviewer | Assessment |
 | --- | --- |
-| 🔍 qa-team | <1 sentence> |
-| 👤 paul | <1 sentence> |
-| 📐 xp | <1 sentence> |
-| 🛡 security-audit | <1 sentence> |
+| 🧭 router | <1 sentence + danger/complexity assessment + what it delegated> |
+<one row per reviewer that actually ran this round — omit rows for reviewers not delegated>
 
 <details>
 <summary>Previous rounds (<n>)</summary>
@@ -379,13 +466,23 @@ per-finding, and resolvable. Only the top-level summary is deduplicated.
 
 ### Graceful degradation
 
-- **qa-team files not found:** Skip qa-team agent. Warn user. Run the other three.
-- **paul-reviewer not found (disk or store):** Skip paul agent. Warn user. Run the other three.
-- **xp-reviewer not found (disk or store):** Skip xp agent. Warn user. Run the other three.
-- **security-audit not found / PostHog MCP unavailable:** Skip security-audit
-  agent. Warn user (`security-audit: skip (MCP unavailable)`). Run the other
-  three. This case is more likely than the on-disk skips above because it
-  depends on a network call to the PostHog MCP server — treat it as the
-  expected fallback when running offline or against a degraded MCP endpoint.
+- **Router model (`@cf/zai-org/glm-5.2`) unavailable or rejected by the
+  harness:** Run the router with no `model` pin (inherits the session model)
+  if the session is already on glm-5.2; otherwise fall back to `sonnet` for
+  the router. The router still produces a delegation plan; only the cost of
+  the first pass changes.
+- **A delegation target's body not found (qa-team files, paul-reviewer,
+  xp-reviewer disk/store, security-audit MCP):** Skip that delegation target,
+  warn the user, and let the router re-route that concern to another target
+  if one fits (e.g. route a security concern the router itself can cover,
+  since security-audit is unavailable). If the router can't safely cover it,
+  surface it as a HIGH finding noting the reviewer was unavailable.
+- **security-audit not found / PostHog MCP unavailable:** Skip
+  security-audit delegation. Warn user (`security-audit: skip (MCP
+  unavailable)`). This case is more likely than the on-disk skips above
+  because it depends on a network call to the PostHog MCP server — treat it
+  as the expected fallback when running offline or against a degraded MCP
+  endpoint.
 - **No PR detected:** Run all reviews, output report to terminal only. Offer to post if user provides a PR number.
-- **Only one reviewer available:** Still run it and post findings. Better than nothing.
+- **Only the router available (no delegation targets):** Still post the
+  router's findings. Better than nothing — the cheap pass is a real review.

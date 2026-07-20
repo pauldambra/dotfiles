@@ -42,10 +42,12 @@ re-invoke manually. State is carried between invocations via `$ARGUMENTS` or via
 the surrounding conversation when iterations run back-to-back inside one Claude
 session.
 
-## Run the loop session on Sonnet
+## Run the loop session on GLM-5.2 (cheap-first reviews)
 
-This loop is built to keep **mechanical work on Sonnet** and **review work on
-Fable/Opus**, but only the subagents can be pinned — the orchestration cannot:
+This loop is built to keep **mechanical work on Sonnet** and **review work
+cheap-first on GLM-5.2**, escalating to Fable/Opus only when a change is
+complex or dangerous. Only the subagents can be pinned — the orchestration
+cannot:
 
 - `review-triage` and `ci-shepherd` are dispatched as `model: 'sonnet'` Agent
   subagents (inside Step 2's quality loop, and Step 3) — pinned,
@@ -55,19 +57,27 @@ Fable/Opus**, but only the subagents can be pinned — the orchestration cannot:
   so the subagent's prompt just tells it to invoke `Skill("simplify")` itself.
   It shares review-triage/ci-shepherd's mechanical tier, not qa-swarm's
   reviewer tier — see *Dispatch mechanism*.
-- qa-swarm pins its four reviewer agents regardless of the caller (Step 2) —
-  `fable` for qa-team and security-audit, `opus` for paul-reviewer and
-  xp-reviewer — so reviews stay sharp even on a cheaper session.
+- qa-swarm now does **cheap-first review**: a single router reviewer on
+  `@cf/zai-org/glm-5.2` does the first pass and decides whether to delegate
+  part or all of the review to a stronger model (`opus`/`fable`, soon
+  `gpt-sol`/`kimi-k3`) based on the change's danger/complexity. Low-danger
+  diffs may run entirely on the router — that's the cost saving. See qa-swarm's
+  *Step 3*. The router is pinned to glm-5.2 explicitly; if the harness rejects
+  the non-Claude model string on a subagent, qa-swarm omits the pin so the
+  router inherits the session model — which is why the session should itself
+  be on glm-5.2.
 - The top-level orchestration (PR resolution, the quality-loop rounds,
   qa-swarm's own coordination, stamphog, the summary) runs in the **main
   loop**, so it inherits the **session model**. A skill cannot switch its own
   session model.
 
-So launch the session on Sonnet — `/model sonnet` before
-`/loop 5m /pr-shepherd <pr>` — to get mechanical-on-Sonnet, deep-reviews-on-Fable
-end to end. On an Opus session the split still holds for the subagents and the
-reviews, but the orchestration loop pays Opus rates for work that does not need
-it.
+So launch the session on GLM-5.2 — `/model @cf/zai-org/glm-5.2` before
+`/loop 5m /pr-shepherd <pr>` — so the orchestration loop and the router
+reviewer (when its pin falls back to inheritance) both run cheaply, while
+qa-swarm's delegated reviewers still escalate to fable/opus only when the
+router judges the change worth it. On a Sonnet session the subagent pins still
+hold, but the orchestration and the router-inheritance fallback pay Sonnet
+rates instead of GLM-5.2's.
 
 ## Narration — keep the user in the loop
 
@@ -131,10 +141,11 @@ themselves.
 The mechanical work lives in the sub-skills; this skill owns the decisions.
 
 - **qa-swarm runs in this main loop** (inside Step 2's quality loop), via
-  `Skill("qa-swarm")` — *not* inside a sub-skill runner. qa-swarm itself spawns
-  four reviewer agents (`fable`/`opus` per its own split), and we keep that out
-  of a dispatched subagent to avoid nesting agent spawns (the same reason the
-  previous single-runner design kept qa-swarm in the main loop).
+  `Skill("qa-swarm")` — *not* inside a sub-skill runner. qa-swarm itself
+  spawns a router reviewer (GLM-5.2) plus any delegation targets it escalates
+  to (`opus`/`fable`/`gpt-sol`/`kimi-k3`), and we keep that out of a dispatched
+  subagent to avoid nesting agent spawns (the same reason the previous
+  single-runner design kept qa-swarm in the main loop).
 - **`review-triage`, `ci-shepherd`, and `simplify` each run as a single
   `model: 'sonnet'` `Agent` subagent.** They carry the bulk of this loop's tool
   calls and need no deep reasoning, so a cheaper model with a tight per-call
@@ -523,10 +534,11 @@ body):
   triage, owns the *Judgement rules for auto-actioning a comment*, and folds
   in the `paul-pair` autonomy ladder for its ambiguous bucket.
 - **`ci-shepherd`** sub-skill (Step 3) — branch-currency restack + CI report.
-- **`qa-swarm`** (Step 2) — orchestrates the four review agents; resolved
-  local-first, then the store (see *Dispatch mechanism*). Run in this main loop
-  so its `fable`/`opus` reviewer agents aren't nested inside a dispatched
-  subagent.
+- **`qa-swarm`** (Step 2) — orchestrates the cheap-first review (router on
+  GLM-5.2 + delegated reviewers on `opus`/`fable`/`gpt-sol`/`kimi-k3` as
+  warranted); resolved local-first, then the store (see *Dispatch
+  mechanism*). Run in this main loop so its reviewer agents aren't nested
+  inside a dispatched subagent.
 - **`simplify`** (Step 2) — built-in reuse/simplification/efficiency pass;
   dispatched as a plain `model: 'sonnet'` `Agent` that calls `Skill("simplify")`
   itself, since there's no SKILL.md body to load-then-spawn.
