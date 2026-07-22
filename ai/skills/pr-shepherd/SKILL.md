@@ -3,7 +3,7 @@ name: pr-shepherd
 description: >
   Shepherds a PR through the repetitive loop: run qa-swarm review and the
   simplify pass in convergence rounds, triage the review conversation
-  (review-triage), keep the branch current and report CI (ci-shepherd), apply
+  (review-triage), keep the branch current and repair CI (ci-shepherd), apply
   the `stamphog` label on each new commit, and report stamphog's verdict. Use
   when the user says "/pr-shepherd", "shepherd this PR", "babysit this PR", or
   wants the whole review loop driven automatically. Accepts an optional PR
@@ -21,7 +21,8 @@ and managing the stamphog approval label on top of them:
 - **`review-triage`** — triages the qa-swarm + bot review threads (fix /
   resolve / defer), with `paul-pair`'s autonomy ladder folded into the
   ambiguous bucket so only genuine stop-and-ask cases still defer to the user.
-- **`ci-shepherd`** — keeps the branch current with its base and reports CI.
+- **`ci-shepherd`** — keeps the branch current, diagnoses CI, fixes PR-caused
+  failures, and reruns likely flaky/infrastructure jobs once.
 
 `qa-swarm`, `simplify`, and `review-triage` run together in a **quality loop**
 (Step 2) — at least twice, continuing until a round finds nothing new — so a
@@ -93,7 +94,7 @@ Examples:
 
 ```
 [shepherd] step 1 — resolving PR from gh pr view
-[shepherd] step 1 — no change since a1b2c3d, stamphog present — skipping iteration
+[shepherd] step 1 — no change since a1b2c3d, stamphog present, no failing CI — skipping iteration
 [shepherd] step 1 — PR is draft, marking ready before continuing
 [shepherd] step 2 round 1 — diff since a1b2c3d touches src/foo.ts, running qa-swarm
 [shepherd] step 2 round 1 — dispatching review-triage (sonnet runner)
@@ -192,7 +193,7 @@ Step 4  apply stamphog iff stamphog_applied_for_sha != H2; read + report its ver
 ```
 
 The trap this avoids: passing `H0` instead of the quality loop's final `H1` to
-ci-shepherd would restack / report CI against a stale tree — same trap as
+ci-shepherd would restack / diagnose CI against a stale tree — same trap as
 before, just with more hops feeding into `H1`.
 
 **Fields consumed from the runner results.** From `review-triage`:
@@ -201,7 +202,8 @@ before, just with more hops feeding into `H1`.
 `simplify`'s wrapping Agent: the list of files changed (or none) — used only
 for round-dryness and the summary, no formal JSON schema since it's a plain
 `Agent` call, not a load-then-spawned sub-skill. From `ci-shepherd`:
-`new_head_sha`, `ci` buckets, `restack_needs_decision` + `restack_decision_files`.
+`new_head_sha`, observed `ci` buckets, the `repair` result, and
+`restack_needs_decision` + `restack_decision_files`.
 (Each sub-skill's full result schema is defined in its own *Report* step — the
 body you pass it carries that schema.)
 
@@ -230,12 +232,13 @@ If PR state is `MERGED` or `CLOSED`, **terminate** with a final status.
   since you finished last time), and
 - the `stamphog` label is present,
 
-then there is no new work. Emit `[shepherd] step 1 — no change since
-<short_sha>, stamphog present — skipping iteration`, print the state line (Step
-5), and exit **without dispatching the quality loop or ci-shepherd**. The PR's
-`updatedAt` advances on any commit / comment / review / label event, so a match
-means the PR is genuinely idle. (CI-only status changes may not move it — that's
-acceptable: CI is non-gating, and the next real event triggers a full pass.)
+then make one lightweight `gh pr checks` query before skipping. If it reports
+no failed checks, emit `[shepherd] step 1 — no change since <short_sha>,
+stamphog present, no failing CI — skipping iteration`, print the state line
+(Step 5), and exit. If any check fails, narrate `[shepherd] step 1 — PR content
+is unchanged but CI is failing; continuing to ci-shepherd` and continue the
+iteration. CI-only status changes may not advance `updatedAt`, so they must be
+allowed through this gate.
 
 If `isDraft == true`, mark it ready before continuing — invoking the shepherd is
 itself the signal that the PR is ready for autonomous review:
@@ -349,8 +352,10 @@ Load-then-spawn `ci-shepherd` as a `model: 'sonnet'` `Agent` subagent. Pass it
 `head_sha_in = H1` (the quality loop's final HEAD from Step 2), the PR number /
 owner / repo / base, with the **ci-shepherd sub-step override brief**.
 
-Relay its `narration` verbatim. Record `new_head_sha` as `H2` and the `ci`
-buckets.
+Relay its `narration` verbatim. Record `new_head_sha` as `H2`, the observed `ci`
+buckets, and the `repair` result (attempted/committed/fixed/rerun/unresolved).
+The CI buckets are explicitly the pre-repair snapshot when a repair moved HEAD;
+fresh remote CI is evaluated by the next shepherd iteration.
 
 If it returns `restack_needs_decision: true`, **terminate** this iteration: hand
 the `restack_decision_files` list back to the user with the one-line reasons.
@@ -414,14 +419,15 @@ Print a one-line **summary** of the iteration (on top of the per-step narration
 and the relayed sub-skill narration from earlier):
 
 ```
-[shepherd] iter done — sha=<short_sha> qa-swarm=<ran|skip> rounds=<n> resolved=<n> actioned=<n> promoted=<n> simplify=<changed n files|clean> deferred=<n> ci=<pass=N pending=N fail=N> stamphog=<applied|already|skipped> verdict=<approved|changes|dismissed|pending>
+[shepherd] iter done — sha=<short_sha> qa-swarm=<ran|skip> rounds=<n> resolved=<n> actioned=<n> promoted=<n> simplify=<changed n files|clean> deferred=<n> ci=<pass=N pending=N fail=N> ci-repair=<committed|none|blocked> rerun=<n> stamphog=<applied|already|skipped> verdict=<approved|changes|dismissed|pending>
 ```
 
 `rounds` is how many quality-loop rounds ran this iteration (1-4). `resolved` /
-`actioned` / `promoted` / `deferred` are summed across all rounds. If there are
+`actioned` / `promoted` / `deferred` are summed across all rounds. CI counts are
+the snapshot observed before any repair push. If there are
 deferred threads, print their `file:line` and one-line reason under the status
-line. If any CI checks are failing, print their names + links on a separate
-line (informational — not a termination). If stamphog requested changes or
+line. Summarize fixed root causes and validation, queued reruns, and unresolved
+CI failures with their classifications. If stamphog requested changes or
 dismissed, print its one-line reason.
 
 Then print the state values so the next caller (the user, or the `loop` skill)
@@ -446,15 +452,19 @@ Stop cleanly and print a final summary when **any** of:
 - PR is `MERGED` or `CLOSED`.
 - A base-branch conflict needs a human decision (ci-shepherd returned
   `restack_needs_decision` — see Step 3).
-- `stamphog` is applied for the current SHA, no new bot threads have appeared
+- `stamphog` is applied for the current SHA, CI has no failures requiring an
+  autonomous repair, no new bot threads have appeared
   since the last iteration, and the only remaining unresolved threads are in
-  `deferred_threads` — nothing autonomous left to do (CI state, pass or fail,
-  does not factor in). The Step 1 fast path short-circuits this case on
-  re-invocation.
+  `deferred_threads` — nothing autonomous remains. CI failures already
+  classified as unrelated or needs-decision do not force unsafe repeated
+  edits, but they must be surfaced. The Step 1 fast path checks CI before
+  short-circuiting this case on re-invocation.
 - The user interrupts.
 
-CI failures are **not** a terminal condition. They are reported in the iteration
-summary and the loop continues — the user decides whether to investigate.
+CI failures are **not** report-only. `ci-shepherd` must diagnose them and exhaust
+the safe repair/rerun action for this iteration before handing back. A repair
+push is evaluated on the next iteration; unrelated and needs-decision failures
+are surfaced with evidence.
 Likewise, ambiguous review findings are **not** a terminal condition; they go to
 `deferred_threads` and the loop keeps polling.
 
@@ -526,14 +536,17 @@ body):
   owns the hand-back. Inputs supplied: PR number, owner/repo, base,
   `head_sha_in` — operate against `head_sha_in`. Do not narrate to the user —
   collect `[ci]` lines into `narration`. Return the structured result from your
-  *Step 4: Report* and stop."
+  *Step 5: Report* and stop. Diagnose every failing leaf job, perform at most one
+  verified repair commit, rerun likely flaky/infrastructure jobs once, and do
+  not wait for fresh remote CI."
 
 ## Dependencies
 
 - **`review-triage`** sub-skill (Step 2) — runs qa-swarm thread + bot thread
   triage, owns the *Judgement rules for auto-actioning a comment*, and folds
   in the `paul-pair` autonomy ladder for its ambiguous bucket.
-- **`ci-shepherd`** sub-skill (Step 3) — branch-currency restack + CI report.
+- **`ci-shepherd`** sub-skill (Step 3) — branch-currency restack + CI diagnosis,
+  repair, and bounded flaky-job rerun.
 - **`qa-swarm`** (Step 2) — orchestrates the cheap-first review (router on
   GLM-5.2 + delegated reviewers on `opus`/`fable`/`gpt-sol`/`kimi-k3` as
   warranted); resolved local-first, then the store (see *Dispatch
@@ -553,7 +566,7 @@ body):
 - **`review-triage` skill missing:** warn and continue with `ci-shepherd` +
   stamphog. You lose the triage signal (resolved/deferred counts), but stamphog
   is still applied and its verdict still read.
-- **`ci-shepherd` skill missing:** warn and skip the restack + CI report; run
+- **`ci-shepherd` skill missing:** warn and skip the restack + CI repair; run
   the quality loop and apply stamphog against `H1` (no further HEAD movement).
   Report CI as unknown.
 - **`qa-swarm` skill missing:** warn and skip the qa-swarm gate for every
