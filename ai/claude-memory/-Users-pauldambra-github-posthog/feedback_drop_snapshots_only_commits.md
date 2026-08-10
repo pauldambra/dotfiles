@@ -10,6 +10,6 @@ When adopting another author's PR (checking out, rebasing onto master, pushing),
 
 **How to apply:**
 - Before rebasing, enumerate the PR's commits (`git log <merge-base>..<branch> --name-only`) and identify any whose sole changed file is `frontend/snapshots.yml`.
-- During the rebase, drop those commits (interactive rebase `drop`, or pass `--exec` / git-filter / `gt` equivalent).
+- During the rebase, drop those commits (interactive rebase `drop`, or pass `--exec` / git-filter).
 - After the rebase, verify no such commit remains: `git log master..HEAD --name-only | awk` check.
 - If there are none in the PR (as in PR #55324), still keep the filter in the plan as a defensive step so it's applied consistently.

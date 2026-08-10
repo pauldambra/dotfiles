@@ -2,8 +2,6 @@
 
 ## Feedback
 - [feedback_bot_comments_need_identifier.md](feedback_bot_comments_need_identifier.md) - Every GitHub comment an agent posts must lead with a bot-identifier banner, including hand-written author replies
-- [feedback_use_graphite_mcp.md](feedback_use_graphite_mcp.md) - Always use Graphite MCP tools instead of raw git for stack operations
-- [feedback_restack_preapproved_on_stacks.md](feedback_restack_preapproved_on_stacks.md) - On a Graphite stack, restacking is pre-approved — don't ask before gt restack/submit to propagate base changes upstack
 - [feedback_prefer_frozen_dataclasses.md](feedback_prefer_frozen_dataclasses.md) - Prefer `@dataclass(frozen=True)` over `typing.NamedTuple` for small Python result/record types
 - [feedback_drop_snapshots_only_commits.md](feedback_drop_snapshots_only_commits.md) - When adopting a PR, drop commits whose only change is frontend/snapshots.yml
 - [feedback_no_ligatures.md](feedback_no_ligatures.md) - Never use programming-ligature characters (use ASCII like ->, !=, >=)

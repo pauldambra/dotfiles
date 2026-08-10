@@ -25,17 +25,11 @@ Emit a short line before each step so the user can follow progress:
 
 ```
 [takeover] step 1 — resolving PR #53004
-[takeover] step 2 — branch is BEHIND master by 142 commits, restacking via graphite
+[takeover] step 2 — branch is BEHIND master by 142 commits, updating from base
 [takeover] step 3 — 4 unresolved review threads, 1 actionable, 2 nit, 1 ambiguous
 [takeover] step 4 — running hogli test --changed
 [takeover] step 5 — handing off to pr-shepherd
 ```
-
-## Graphite MCP is mandatory
-
-All git operations (fetch, checkout, restack, commit, push) MUST go through
-the Graphite MCP. Do not fall back to raw `git` unless Graphite cannot
-express the operation. This matches the user's durable preference.
 
 ## Workflow
 
@@ -56,27 +50,27 @@ Stop immediately if:
   they've abandoned it (recent commits, active reviews). Ask the user to
   confirm they intend to take it over before proceeding.
 
-Use Graphite MCP to fetch and check out the PR branch locally.
+Check out the PR branch locally with `gh pr checkout <pr_number>`.
 
 ### Step 2: Bring the branch up to date with its base
 
 ```bash
-gh pr view <pr_number> --json mergeable,mergeStateStatus
+gh pr view <pr_number> --json mergeable,mergeStateStatus \
+  --jq '{mergeable, status: .mergeStateStatus}'
 ```
 
-If `mergeStateStatus` is `BEHIND`, `DIRTY`, or `UNKNOWN`, or `mergeable ==
-CONFLICTING`:
+If `status` is `BEHIND`, run `gh pr update-branch <pr_number>` to merge the
+current base (usually `master`) into the PR branch, then `git fetch` and
+fast-forward the local branch (`git merge --ff-only @{u}`). The HEAD SHA has
+changed — re-read it with `gh pr view --json headRefOid`.
 
-- Restack via Graphite MCP onto `baseRefName` (usually `master`).
-- If Graphite reports conflicts it cannot resolve automatically:
-  1. Print the conflicting files.
-  2. **Stop.** Ask the user to resolve, then rerun this skill.
+If `mergeable == "CONFLICTING"` or `status` is `DIRTY`, the branch conflicts
+with its base and `update-branch` cannot merge through it:
 
-A clean restack is the whole point of the takeover — do not push broken
-merges.
+1. Print the conflicting files.
+2. **Stop.** Ask the user to resolve, then rerun this skill.
 
-After a successful restack, the HEAD SHA will have changed. Re-read it
-with `gh pr view --json headRefOid`.
+A clean base is the whole point of the takeover — do not push broken merges.
 
 ### Step 3: Triage unresolved review threads
 
@@ -90,8 +84,8 @@ not re-derive them here.
 
 Handle each class:
 
-- **Actionable** — apply the edit, commit via Graphite MCP with a message
-  like `fix: address stale review comment <short summary>`, push, then
+- **Actionable** — apply the edit, commit with a message like
+  `fix: address stale review comment <short summary>`, `git push`, then
   resolve the thread with a short reply noting the commit SHA. Include the
   bot-identifier header from `review-triage` so it's clearly automated.
 - **NIT** — resolve with a one-line reply explaining why (intentional,
@@ -101,7 +95,7 @@ Handle each class:
 
 ### Step 4: Sanity-check the branch
 
-Run the impacted test set to confirm the restack didn't break anything
+Run the impacted test set to confirm the base update didn't break anything
 obvious:
 
 ```bash
@@ -140,8 +134,8 @@ stamphog loop.
 ## Terminal conditions (stop cleanly, do not hand off)
 
 - PR is merged or closed.
-- Restack has unresolvable conflicts.
-- Test suite fails after the restack.
+- The branch conflicts with its base and needs manual resolution.
+- Test suite fails after the base update.
 - More than **3** review threads are classified ambiguous — the PR needs
   a real human conversation, not a shepherd. Print them and stop.
 - The user interrupts.
@@ -154,7 +148,7 @@ resolved, threads deferred, reason for stopping.
 ```
 [takeover] done
   branch:   <branch> @ <short_sha>
-  rebased:  <yes|no|conflicts>
+  base:     <updated|current|conflict>
   commits:  <n pushed> (<short_sha> <message>, ...)
   threads:  <resolved>/<replied>/<deferred>
   tests:    <passed|failed|skipped>
@@ -163,15 +157,13 @@ resolved, threads deferred, reason for stopping.
 
 ## Dependencies
 
-- Graphite MCP for all git operations.
-- `gh` CLI for PR metadata and review-thread GraphQL.
+- `git` for commit/push; `gh` CLI for PR checkout, metadata, `pr
+  update-branch`, and review-thread GraphQL.
 - `hogli test --changed` when working inside the posthog monorepo.
 - `Skill("pr-shepherd")` for the active review loop.
 
 ## Graceful degradation
 
-- **No Graphite MCP available:** warn and stop — this skill's whole point
-  is a clean restack.
 - **No `hogli`:** skip the changed-tests step, surface that the branch was
   not test-verified in the handoff summary.
 - **No pr-shepherd skill:** stop at end of Step 4 and print the handoff
