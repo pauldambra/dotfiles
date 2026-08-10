@@ -36,6 +36,11 @@ It defers anything genuinely ambiguous to the user.
 Each sub-skill is also independently invocable (`/review-triage`,
 `/ci-shepherd`) when you only want that slice. This skill is the full loop.
 
+Every skill above is symlinked into `~/.claude/skills/` for local dev or
+available from the PostHog skill store, so the loop runs identically in local
+and cloud tasks (see *Dispatch mechanism*). Git work uses plain `git`/`gh`,
+available in both.
+
 **One invocation = one iteration.** The skill does not sleep or self-loop in
 practice — the model exits after a single pass. For hands-off cadence, run it
 under the `loop` skill (e.g. `/loop 5m /pr-shepherd <pr>`). For ad-hoc nudges,
@@ -187,14 +192,13 @@ Step 2  quality loop, rounds r = 1..N (N <= 4, converges when a round is dry):
             beyond what was passed in, AND simplify changed 0 files
         H1 = H(N).final                                       (loop's final head)
 Step 3  ci-shepherd(head_sha_in = H1)   -> new_head_sha = H2   (thread H1, NOT H0)
-        if restack_needs_decision: TERMINATE (hand back the file list; skip Step 4)
 HEAD_SHA := H2                                                 (the final head)
 Step 4  apply stamphog iff stamphog_applied_for_sha != H2; read + report its verdict
 ```
 
 The trap this avoids: passing `H0` instead of the quality loop's final `H1` to
-ci-shepherd would restack / diagnose CI against a stale tree — same trap as
-before, just with more hops feeding into `H1`.
+ci-shepherd would diagnose CI against a stale tree — same trap as before, just
+with more hops feeding into `H1`.
 
 **Fields consumed from the runner results.** From `review-triage`:
 `new_head_sha`, `deferred_threads`, plus `resolved` / `actioned` / `promoted` /
@@ -202,8 +206,7 @@ before, just with more hops feeding into `H1`.
 `simplify`'s wrapping Agent: the list of files changed (or none) — used only
 for round-dryness and the summary, no formal JSON schema since it's a plain
 `Agent` call, not a load-then-spawned sub-skill. From `ci-shepherd`:
-`new_head_sha`, observed `ci` buckets, the `repair` result, and
-`restack_needs_decision` + `restack_decision_files`.
+`new_head_sha`, observed `ci` buckets, the `repair` result, and `base_update`.
 (Each sub-skill's full result schema is defined in its own *Report* step — the
 body you pass it carries that schema.)
 
@@ -324,8 +327,8 @@ own job); **not** commit or push (this skill owns that); and report back the
 list of files it changed (or that it found nothing to simplify). Never call
 `AskUserQuestion`.
 
-If it changed any files: stage via Graphite MCP, commit
-(`refactor: apply simplify pass`), push via Graphite MCP. HEAD moves. Narrate
+If it changed any files: stage with `git add`, commit
+(`refactor: apply simplify pass`), push with `git push`. HEAD moves. Narrate
 `[shepherd] step 2 round <r> — simplify changed <n> file(s), committed
 <short_sha>` or `[shepherd] step 2 round <r> — simplify found nothing to
 change`. Set `simplify_marker_sha = HEAD` either way.
@@ -357,9 +360,9 @@ buckets, and the `repair` result (attempted/committed/fixed/rerun/unresolved).
 The CI buckets are explicitly the pre-repair snapshot when a repair moved HEAD;
 fresh remote CI is evaluated by the next shepherd iteration.
 
-If it returns `restack_needs_decision: true`, **terminate** this iteration: hand
-the `restack_decision_files` list back to the user with the one-line reasons.
-Skip Step 4 (a needs-decision conflict is a Step 3 terminal condition).
+If it reports `base_update.status == "conflict"`, surface that one-line reason
+in the narration and summary and **continue** to Step 4 — a base conflict blocks
+merge (the human's call), not review or stamping.
 
 ### Step 4: Apply `stamphog` and read its verdict
 
@@ -450,8 +453,6 @@ manually when ready for the next iteration.
 Stop cleanly and print a final summary when **any** of:
 
 - PR is `MERGED` or `CLOSED`.
-- A base-branch conflict needs a human decision (ci-shepherd returned
-  `restack_needs_decision` — see Step 3).
 - `stamphog` is applied for the current SHA, CI has no failures requiring an
   autonomous repair, no new bot threads have appeared
   since the last iteration, and the only remaining unresolved threads are in
@@ -495,6 +496,12 @@ Instead, spawn a plain `model: 'sonnet'` `Agent` whose entire prompt is the
 itself against the current diff, apply its own fixes, not commit/push, and
 report back which files it changed.
 
+Every skill this loop uses is **symlinked into `~/.claude/skills/<name>` for
+local dev or published to the PostHog skill store** — so the loop runs
+identically in local and cloud tasks. Git work uses plain `git`/`gh`, available
+in both. (The lone exception is `simplify`, a built-in harness skill with no
+store copy.)
+
 **Resolve each sibling skill local-first, then the store.** This covers
 `review-triage`, `ci-shepherd`, and `qa-swarm` (Step 2) — not `simplify`,
 which has no store fallback to resolve (it's built into the harness, not a
@@ -530,22 +537,21 @@ body):
   working tree. Do not commit or push — the caller does that. Never call
   `AskUserQuestion`. Report back: the list of files changed (or 'no changes'
   if it found nothing to simplify), and a one-line summary per file."
-- **ci-shepherd:** "Sub-step, not standalone. Never call `AskUserQuestion`. On a
-  needs-decision conflict do not prompt — abort the restack cleanly and return
-  `restack_needs_decision: true` with `restack_decision_files`; the orchestrator
-  owns the hand-back. Inputs supplied: PR number, owner/repo, base,
-  `head_sha_in` — operate against `head_sha_in`. Do not narrate to the user —
-  collect `[ci]` lines into `narration`. Return the structured result from your
-  *Step 5: Report* and stop. Diagnose every failing leaf job, perform at most one
-  verified repair commit, rerun likely flaky/infrastructure jobs once, and do
-  not wait for fresh remote CI."
+- **ci-shepherd:** "Sub-step, not standalone. Never call `AskUserQuestion`. If
+  `gh pr update-branch` reports a base conflict do not resolve it — record it in
+  `base_update` and continue; the human owns the conflict. Inputs supplied: PR
+  number, owner/repo, base, `head_sha_in` — operate against `head_sha_in`. Do
+  not narrate to the user — collect `[ci]` lines into `narration`. Return the
+  structured result from your *Step 5: Report* and stop. Diagnose every failing
+  leaf job, perform at most one verified repair commit, rerun likely
+  flaky/infrastructure jobs once, and do not wait for fresh remote CI."
 
 ## Dependencies
 
 - **`review-triage`** sub-skill (Step 2) — runs qa-swarm thread + bot thread
   triage, owns the *Judgement rules for auto-actioning a comment*, and folds
   in the `paul-pair` autonomy ladder for its ambiguous bucket.
-- **`ci-shepherd`** sub-skill (Step 3) — branch-currency restack + CI diagnosis,
+- **`ci-shepherd`** sub-skill (Step 3) — branch-currency update + CI diagnosis,
   repair, and bounded flaky-job rerun.
 - **`qa-swarm`** (Step 2) — orchestrates the cheap-first review (router on
   GLM-5.2 + delegated reviewers on `opus`/`fable`/`gpt-sol`/`kimi-k3` as
@@ -555,10 +561,8 @@ body):
 - **`simplify`** (Step 2) — built-in reuse/simplification/efficiency pass;
   dispatched as a plain `model: 'sonnet'` `Agent` that calls `Skill("simplify")`
   itself, since there's no SKILL.md body to load-then-spawn.
-- `gh` CLI (repo, pr, api, label commands).
-- Graphite MCP for git operations (used inside the sub-skills, and to commit
-  `simplify`'s changes). Fall back to `gh`/`git` only when Graphite doesn't
-  cover a case.
+- `gh` CLI (repo, pr, api, label, `pr update-branch` commands).
+- `git` for committing/pushing `simplify`'s changes (and inside the sub-skills).
 - The `Agent` tool with `model: 'sonnet'` for the three sub-skill runners.
 
 ## Graceful degradation
@@ -566,7 +570,7 @@ body):
 - **`review-triage` skill missing:** warn and continue with `ci-shepherd` +
   stamphog. You lose the triage signal (resolved/deferred counts), but stamphog
   is still applied and its verdict still read.
-- **`ci-shepherd` skill missing:** warn and skip the restack + CI repair; run
+- **`ci-shepherd` skill missing:** warn and skip the branch update + CI repair; run
   the quality loop and apply stamphog against `H1` (no further HEAD movement).
   Report CI as unknown.
 - **`qa-swarm` skill missing:** warn and skip the qa-swarm gate for every

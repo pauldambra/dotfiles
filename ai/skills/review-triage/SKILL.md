@@ -21,7 +21,7 @@ changes, classifies every unresolved review thread (qa-swarm, bot, and human),
 applies the fixes that are clear and localised, resolves nits silently, runs
 ambiguous AI/bot threads through `paul-pair`'s autonomy ladder before
 deferring (see *Judgement rules for auto-actioning a comment*), and always
-defers threads with human participation to a human. Does **not** restack the
+defers threads with human participation to a human. Does **not** update the
 branch, watch CI, or manage the `stamphog` label — that is `ci-shepherd`'s and
 `pr-shepherd`'s job.
 
@@ -215,9 +215,9 @@ replied in is deferred, untouched. Otherwise classify the thread body:
 
 Handle each class:
 
-- **Actionable:** apply the edit with `Edit`/`Write`, stage via Graphite MCP,
+- **Actionable:** apply the edit with `Edit`/`Write`, stage with `git add`,
   commit with a message like `fix: address qa-swarm <short description>`, push
-  via Graphite MCP, then resolve the thread — no reply; the commit SHA and a
+  with `git push`, then resolve the thread — no reply; the commit SHA and a
   one-line description go in the narration and report. If `body_truncated ==
   true` for this thread, refetch the full body first (see *Refetch full body
   before acting* below) so the fix isn't based on a clipped suggestion.
@@ -436,8 +436,7 @@ Ambiguous review findings are **not** a terminal condition; they go to
   threads before deferring (see *The paul-pair gate*), resolved local-first
   then from the PostHog skill store, same pattern as `qa-swarm`.
 - `gh` CLI (repo, pr, api commands).
-- Graphite MCP for git operations (commit/push for fixes). Fall back to
-  `gh`/`git` only when Graphite doesn't cover a case.
+- `git` for committing/pushing fixes.
 
 ## Graceful degradation
 
