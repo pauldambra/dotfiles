@@ -80,12 +80,6 @@ often applying the simplicity rules removes them
 
 NOTE: never remove comments that are already present in the code, only edit comments you have added
 
-# graphite
-
-i prefer graphite for git work. the `gt` cli and the graphite mcp (`mcp__graphite__run_gt_cmd`) should always be present on my machines - assume they are available.
-
-prefer the graphite mcp over raw git for anything touching a stack - `gt restack`, `gt submit`, `gt sync`. raw `git rebase` or `git push --force-with-lease` on a stacked branch bypasses graphite's base tracking and breaks the stack. only fall back to raw git when no gt equivalent exists.
-
 # code formatting in chat
 
 never use programming-ligature characters (e.g. → ← ⇒ ≠ ≥ ≤) when displaying code or technical content. they hurt legibility in my terminal. use ascii equivalents (->, <-, =>, !=, >=, <=).

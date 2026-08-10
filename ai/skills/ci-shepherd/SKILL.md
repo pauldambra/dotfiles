@@ -3,7 +3,7 @@ name: ci-shepherd
 description: >
   Keeps a PR current with its base, diagnoses failing CI, fixes failures caused
   by the PR, and reruns likely flaky or infrastructure jobs once. Use when the
-  user says "/ci-shepherd", "fix CI", "restack this PR", "is my branch
+  user says "/ci-shepherd", "fix CI", "update this branch", "is my branch
   behind?", "keep this branch current", or "what's CI saying?". Accepts an
   optional PR number or URL. Reads no review or stamphog state.
 ---
@@ -11,8 +11,9 @@ description: >
 # CI Shepherd
 
 Keeps a PR branch current with its base and actively shepherds failing CI.
-Restacks the branch when needed, diagnoses failed leaf jobs, fixes failures
-caused by the PR, and reruns likely flaky or infrastructure jobs once. It makes
+Updates the branch from its base when needed, diagnoses failed leaf jobs, fixes
+failures caused by the PR, and reruns likely flaky or infrastructure jobs once.
+It makes
 at most one repair commit per invocation; the next invocation evaluates the
 fresh remote CI. Touches no review threads and no `stamphog` label.
 
@@ -22,15 +23,15 @@ This skill runs in two modes. **Standalone is the default.**
 
 - **Standalone** (a human ran `/ci-shepherd`, or it is wrapped in `/loop`):
   resolve the PR yourself, narrate each step, and print a one-shot summary. A
-  needs-decision conflict is a clean stop — hand the file list back to the user.
+  base conflict is reported, not resolved — surface it and continue.
 - **As a `pr-shepherd` sub-step** (the invocation carries a sub-step brief with
   supplied inputs and a request to return JSON): the caller supplies the PR
   number, owner/repo, base, and `head_sha_in` — operate against `head_sha_in`,
-  do not resolve the PR. **Never call `AskUserQuestion`.** On a needs-decision
-  conflict do not prompt — abort the restack cleanly and return
-  `restack_needs_decision: true` with the file list; the orchestrator owns the
-  hand-back. Do not narrate to the user; collect `[ci]` lines into a `narration`
-  array and end with the single structured result in *Step 5*.
+  do not resolve the PR. **Never call `AskUserQuestion`.** If `gh pr
+  update-branch` reports a base conflict do not resolve it — record it in
+  `base_update` and continue; the human owns the conflict. Do not narrate to the
+  user; collect `[ci]` lines into a `narration` array and end with the single
+  structured result in *Step 5*.
 
 GitHub is the source of truth, so either mode is safely restartable.
 
@@ -45,11 +46,9 @@ Examples:
 
 ```
 [ci] step 1 — resolving PR from gh pr view
-[ci] step 2 — branch is BEHIND, restacking via graphite
-[ci] step 2 — restack hit conflicts in pnpm-lock.yaml, src/foo.ts; classifying
-[ci] step 2 — pnpm-lock.yaml trivial (regen), src/foo.ts non-overlapping — resolving
-[ci] step 2 — resolved 2 conflicts, continuing restack
-[ci] step 2 — conflict in src/auth.ts needs a decision (both sides edit getToken) — deferring
+[ci] step 2 — branch is BEHIND, updating from base via gh pr update-branch
+[ci] step 2 — base merged cleanly; local branch fast-forwarded to new HEAD
+[ci] step 2 — update-branch hit a base conflict; reporting and continuing to CI
 [ci] step 3 — CI: 8 pass, 4 pending, 2 fail; gathering failed leaf jobs
 [ci] step 4 — typecheck is PR-caused and reproduces locally; repairing
 [ci] step 4 — targeted checks pass; committed abc1234 and pushed
@@ -57,7 +56,7 @@ Examples:
 ```
 
 Narrate mid-step when a sub-action could take more than a few seconds (a
-graphite restack, a push). A silent 30+ second gap is the failure mode.
+base update, a push). A silent 30+ second gap is the failure mode.
 
 ## Workflow
 
@@ -84,67 +83,24 @@ state. If the PR state is `MERGED` or `CLOSED`, print that and stop.
 gh pr view <pr_number> --json mergeable,mergeStateStatus
 ```
 
-If `mergeable == "CONFLICTING"` or `mergeStateStatus` in {`DIRTY`, `BEHIND`}:
+If `mergeStateStatus` is `BEHIND` (or `mergeable == "CONFLICTING"` /
+`mergeStateStatus` is `DIRTY`), bring the branch up to date with its base:
 
-- Fetch and fast-forward the local trunk (base branch) first — do this
-  autonomously, no need to ask. Use the Graphite MCP where possible, falling
-  back to `git fetch origin <base>` + `git branch -f <base> origin/<base>` (or
-  `git checkout <base> && git pull --ff-only`).
-- Then use the Graphite MCP to update/restack the PR branch onto the refreshed
-  base.
-- On success, the HEAD SHA has changed — carry on to Step 3 with the new SHA.
-- If Graphite reports conflicts it cannot resolve automatically, **try to
-  resolve them yourself** before handing back. Do **not** terminate on the first
-  conflict — most conflicts with the base branch are mechanical and safe to
-  resolve autonomously.
+- Run `gh pr update-branch <pr_number>` — GitHub merges the current base into
+  the PR branch (a merge commit; no rebase, no force-push, no stack
+  special-casing).
+- On success the remote HEAD moved: `git fetch` and fast-forward the local
+  branch (`git merge --ff-only @{u}`, or `git checkout <head_ref> && git pull
+  --ff-only`) so any repair commit in Step 4 sits on top of the merge. Carry on
+  to Step 3 with the new HEAD SHA.
+- If `gh pr update-branch` reports a **merge conflict with the base**, do **not**
+  try to resolve it — record `base_update.status = "conflict"` with a one-line
+  reason, narrate it, and continue to Step 3. A base conflict blocks merge,
+  which is the human's call; it is not a reason to stop diagnosing or repairing
+  CI, or (in `pr-shepherd`) stamping.
 
-Conflict-resolution sub-workflow:
-
-1. List conflicted files (`git status --porcelain` — look for `UU`, `AA`, `DU`,
-   `UD`, `AU`, `UA`).
-2. Classify every conflicted file as **trivial** or **needs-decision** using the
-   rules below.
-3. If **every** conflict is trivial: resolve each in-place, `git add` the
-   resolved files, continue the restack (Graphite MCP's continue step, or `git
-   rebase --continue` as a fallback), then push. Carry on to Step 3 with the new
-   HEAD SHA.
-4. If **any** conflict is needs-decision: abort the restack cleanly (`git rebase
-   --abort` or the Graphite equivalent), surface the file list with a one-line
-   reason per file. Standalone: **terminate** and hand back to the user. As a
-   sub-step: return `restack_needs_decision: true` with `restack_decision_files`
-   and stop (do not run Step 3).
-
-When in doubt, classify as needs-decision. A short pause is cheaper than a wrong
-merge.
-
-**Trivial** (resolve autonomously) — all of these qualify:
-
-- Lockfiles / generated files: `pnpm-lock.yaml`, `yarn.lock`,
-  `package-lock.json`, `Cargo.lock`, `poetry.lock`, `*.snap`, generated schema
-  or codegen output. Resolution: take the base side and regenerate with the
-  project's package manager / codegen command, or accept the union if
-  regeneration isn't available.
-- Non-overlapping edits inside the same hunk — both sides touched different
-  lines and only conflicted by textual proximity. Resolution: keep both sets of
-  edits, drop the conflict markers.
-- Pure import-order, formatting, or whitespace conflicts. Resolution: union then
-  let the project's formatter sort it.
-- Append-only lists (changelog / `whatsnew` entries, enum members, feature-flag
-  lists where both branches appended a new item). Resolution: keep both entries.
-
-**Needs-decision** (defer to the user) — any one of these:
-
-- Both sides changed the same logical line(s) with different intent (two renames
-  of the same symbol to different names; two different edits to the same
-  conditional).
-- Resolution requires knowing which behaviour is desired (two competing bug
-  fixes, two different refactors of the same function).
-- The conflict spans a refactor boundary — e.g. a function moved on one side and
-  was edited on the other.
-- Any doubt at all — prefer deferring.
-
-If the branch is already current (not `CONFLICTING`/`DIRTY`/`BEHIND`), do
-nothing here and fall through to Step 3 with the unchanged HEAD.
+If the branch is already current, do nothing here and fall through to Step 3
+with the unchanged HEAD.
 
 ### Step 3: Inventory and diagnose CI
 
@@ -203,7 +159,7 @@ Perform **one repair cycle per invocation** across all PR-caused root causes:
    an unverified repair.
 4. If all targeted validation passes and files changed, stage them, create one
    commit (`fix: resolve CI failures` unless a more specific message is clear),
-   and push through Graphite. Include the repository's required commit trailers.
+   and push with `git push`. Include the repository's required commit trailers.
    Return the new HEAD. Never overwrite unrelated user changes.
 
 For every group classified flaky/infrastructure, inspect the workflow run's
@@ -223,13 +179,13 @@ observed CI counts as the pre-repair snapshot and label them accordingly.
 **Standalone:** print a one-line summary —
 
 ```
-[ci] done — sha=<short_sha> restacked=<yes|no> repair=<committed|none|blocked> rerun=<N> observed_ci=<pass=N pending=N fail=N>
+[ci] done — sha=<short_sha> base=<updated|current|conflict> repair=<committed|none|blocked> rerun=<N> observed_ci=<pass=N pending=N fail=N>
 ```
 
 List repaired root causes and their validation commands, queued reruns, and
-unresolved/needs-decision failures with one-line evidence. If a restack was
-deferred, print the needs-decision file list and stop. Then hand back (wrap in
-`/loop` for cadence).
+unresolved/needs-decision failures with one-line evidence. If the base update
+hit a conflict, print its one-line reason. Then hand back (wrap in `/loop` for
+cadence).
 
 **As a `pr-shepherd` sub-step:** end with exactly this structured result and
 nothing after it —
@@ -237,8 +193,8 @@ nothing after it —
 ```json
 {
   "head_sha_in": "<HEAD when this skill started>",
-  "new_head_sha": "<HEAD after restack/repair; == head_sha_in if none>",
-  "restacked": false,
+  "new_head_sha": "<HEAD after base update/repair; == head_sha_in if none>",
+  "base_update": {"status": "updated|current|conflict", "reason": ""},
   "ci": {"snapshot": "pre_repair", "pass": 0, "pending": 0, "fail": 0, "failing": [{"name": "", "link": ""}]},
   "repair": {
     "attempted": false,
@@ -248,8 +204,6 @@ nothing after it —
     "rerun": [{"name": "", "link": "", "job_id": "", "status": "queued|already-retried"}],
     "unresolved": [{"name": "", "link": "", "classification": "unrelated|needs-decision|unresolved", "reason": ""}]
   },
-  "restack_needs_decision": false,
-  "restack_decision_files": [{"path": "", "reason": ""}],
   "narration": ["<one [ci] line per step taken>"]
 }
 ```
@@ -259,8 +213,6 @@ nothing after it —
 Stop cleanly and print the summary when **any** of:
 
 - PR is `MERGED` or `CLOSED`.
-- A base-branch conflict needs a human decision (see Step 2 rules) — hand back
-  the file list.
 - The branch is current and CI is passing/pending, or every failure has been
   repaired, rerun once, or classified with no autonomous action remaining.
 - The user interrupts.
@@ -270,30 +222,12 @@ unresolved failure is a clean hand-back after safe repair/rerun work is exhauste
 
 ## Dependencies
 
-- Graphite MCP for git operations (sync trunk / restack / continue / push). Fall
-  back to `gh`/`git` only when Graphite doesn't cover a case.
-- `gh` CLI (pr view, pr checks).
+- `git` for git operations (fetch / commit / push).
+- `gh` CLI (pr view, pr checks, pr update-branch).
 
 ## Graceful degradation
 
-- **Graphite MCP unavailable:** fall back to `git fetch` + `git rebase` for the
-  restack and `git push` for the push. If even that can't proceed cleanly, warn
-  and report CI only.
 - **No PR detected (standalone):** print a short note asking the user to pass a
   PR number or URL, then stop.
 - **User interrupts mid-run:** stop at the next natural checkpoint and print the
   summary.
-
-## Pitfalls observed in the wild
-
-### Posting via Graphite — `gt submit` "trunk branch is out of date"
-
-After a restack, `gt submit --no-interactive --no-edit --publish` can refuse
-with an error along the lines of *"trunk branch is out of date"*. Run the
-Graphite MCP "sync trunk" / "restack" cycle first, then retry `gt submit` once.
-
-Stay on Graphite for the push. Do **not** fall back to a raw `git push` (or
-`git push --force-with-lease`) after a restack — it bypasses Graphite's
-base-branch tracking and can leave the PR pointing at a stale `graphite-base/`
-ref instead of the real base. Sync trunk, restack, then `gt submit`; don't loop
-on retries.
