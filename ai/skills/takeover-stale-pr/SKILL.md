@@ -79,17 +79,25 @@ Step 3). For each thread:
 
 Classify as **Actionable**, **NIT / non-actionable**, or **Ambiguous**,
 using the same judgement rules documented in `review-triage` §"Judgement
-rules for auto-actioning a comment". The thresholds are identical — do
-not re-derive them here.
+rules for auto-actioning a comment" — including its human-participation
+gate: a thread a real person authored or replied in is deferred, never
+auto-fixed and never auto-resolved. The thresholds are identical — do not
+re-derive them here.
+
+**This skill never posts a comment to GitHub.** It never replies to a
+thread — not a human's (responses to humans come from the PR author), not a
+bot's. Threads it acts on are resolved silently; the reasoning lives in the
+final summary instead of in-thread.
 
 Handle each class:
 
 - **Actionable** — apply the edit, commit with a message like
   `fix: address stale review comment <short summary>`, `git push`, then
-  resolve the thread with a short reply noting the commit SHA. Include the
-  bot-identifier header from `review-triage` so it's clearly automated.
-- **NIT** — resolve with a one-line reply explaining why (intentional,
-  out of scope, disagree + reason).
+  resolve the thread — no reply; the commit SHA and a one-line description
+  go in the final summary.
+- **NIT** — resolve the thread — no reply; record the one-line reason
+  ("intentional — <reason>" / "out of scope" / "disagree — <reason>") in
+  the final summary.
 - **Ambiguous** — leave unresolved. Surface in the final summary as
   "needs-human".
 
@@ -116,14 +124,13 @@ At this point:
 
 - Branch is up to date with `master`.
 - Conflicts are resolved.
-- Each unresolved review thread is either resolved, replied-to, or
-  explicitly deferred.
+- Each unresolved review thread is either resolved or explicitly deferred.
 - Impacted tests pass.
 
 Print a short handoff summary:
 
 ```
-[takeover] complete — sha=<short_sha> resolved=<n> replied=<n> deferred=<n>
+[takeover] complete — sha=<short_sha> resolved=<n> deferred=<n>
 [takeover] handing off to pr-shepherd to run the active review loop
 ```
 
@@ -150,7 +157,7 @@ resolved, threads deferred, reason for stopping.
   branch:   <branch> @ <short_sha>
   base:     <updated|current|conflict>
   commits:  <n pushed> (<short_sha> <message>, ...)
-  threads:  <resolved>/<replied>/<deferred>
+  threads:  <resolved>/<deferred>
   tests:    <passed|failed|skipped>
   next:     <handed off to pr-shepherd|needs human — <reason>>
 ```

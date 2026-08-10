@@ -23,4 +23,4 @@
 - [project_user_interviews_embedding_access.md](project_user_interviews_embedding_access.md) - user_interviews transcripts in document_embeddings: team_id is the only enforced isolation; HogQL-readable under query:read is accepted
 - [project_pageview_auth_only.md](project_pageview_auth_only.md) - $pageview events on us/eu.posthog.com only fire for authenticated PostHog users — cohorts are auth-only, not noisy
 - [project_taxonomic_filter_research.md](project_taxonomic_filter_research.md) - replay-vision scanner + user-interview topic researching taxonomic-filter friction; scanner/topic IDs and early findings
-- [project_pr_shepherd_model_split.md](project_pr_shepherd_model_split.md) - pr-shepherd already pins reviews=Opus, mechanical=Sonnet subagents; orchestration inherits session model, so launch the loop on Sonnet
+- [project_pr_shepherd_model_split.md](project_pr_shepherd_model_split.md) - pr-shepherd pins mechanical subagents to Sonnet and reviews cheap-first behind a GLM-5.2 router; orchestration inherits session model, so launch the loop on GLM-5.2
