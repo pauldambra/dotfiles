@@ -13,9 +13,9 @@ description: >
 Keeps a PR branch current with its base and actively shepherds failing CI.
 Updates the branch from its base when needed, diagnoses failed leaf jobs, fixes
 failures caused by the PR, and reruns likely flaky or infrastructure jobs once.
-It makes
-at most one repair commit per invocation; the next invocation evaluates the
-fresh remote CI. Touches no review threads and no `stamphog` label.
+It makes at most one repair commit per invocation; the next invocation
+evaluates the fresh remote CI. Touches no review threads and no `stamphog`
+label.
 
 ## Dual-mode — standalone vs `pr-shepherd` sub-step
 
@@ -80,27 +80,28 @@ state. If the PR state is `MERGED` or `CLOSED`, print that and stop.
 ### Step 2: Keep the branch current with its base
 
 ```bash
-gh pr view <pr_number> --json mergeable,mergeStateStatus
+gh pr view <pr_number> --json mergeable,mergeStateStatus \
+  --jq '{mergeable, status: .mergeStateStatus}'
 ```
 
-If `mergeStateStatus` is `BEHIND` (or `mergeable == "CONFLICTING"` /
-`mergeStateStatus` is `DIRTY`), bring the branch up to date with its base:
+**Behind its base** (`status == "BEHIND"`) — update it:
 
-- Run `gh pr update-branch <pr_number>` — GitHub merges the current base into
-  the PR branch (a merge commit; no rebase, no force-push, no stack
-  special-casing).
-- On success the remote HEAD moved: `git fetch` and fast-forward the local
-  branch (`git merge --ff-only @{u}`, or `git checkout <head_ref> && git pull
-  --ff-only`) so any repair commit in Step 4 sits on top of the merge. Carry on
-  to Step 3 with the new HEAD SHA.
-- If `gh pr update-branch` reports a **merge conflict with the base**, do **not**
-  try to resolve it — record `base_update.status = "conflict"` with a one-line
-  reason, narrate it, and continue to Step 3. A base conflict blocks merge,
-  which is the human's call; it is not a reason to stop diagnosing or repairing
-  CI, or (in `pr-shepherd`) stamping.
+- Run `gh pr update-branch <pr_number>`, which merges the current base into the
+  PR branch (a merge commit; no rebase, no force-push).
+- The remote HEAD has moved: `git fetch` and fast-forward the local branch
+  (`git merge --ff-only @{u}`) so any repair commit in Step 4 sits on top of
+  the merge. Carry on to Step 3 with the new HEAD SHA.
+- Record `base_update.status = "updated"`.
 
-If the branch is already current, do nothing here and fall through to Step 3
-with the unchanged HEAD.
+**Conflicting with its base** (`mergeable == "CONFLICTING"` or `status ==
+"DIRTY"`) — do **not** attempt the update: `update-branch` merges, so it cannot
+resolve a conflict and will simply fail. Record `base_update.status =
+"conflict"` with a one-line reason, narrate it, and continue to Step 3. A base
+conflict blocks merge, which is the human's call; it is not a reason to stop
+diagnosing or repairing CI, or (in `pr-shepherd`) stamping.
+
+**Otherwise** the branch is current: record `base_update.status = "current"` and
+fall through to Step 3 with the unchanged HEAD.
 
 ### Step 3: Inventory and diagnose CI
 

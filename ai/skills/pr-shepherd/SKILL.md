@@ -36,17 +36,13 @@ It defers anything genuinely ambiguous to the user.
 Each sub-skill is also independently invocable (`/review-triage`,
 `/ci-shepherd`) when you only want that slice. This skill is the full loop.
 
-Every skill above is symlinked into `~/.claude/skills/` for local dev or
-available from the PostHog skill store, so the loop runs identically in local
-and cloud tasks (see *Dispatch mechanism*). Git work uses plain `git`/`gh`,
-available in both.
+Every skill above resolves locally or from the PostHog skill store, so the loop
+runs identically in local and cloud tasks — see *Dispatch mechanism*.
 
-**One invocation = one iteration.** The skill does not sleep or self-loop in
-practice — the model exits after a single pass. For hands-off cadence, run it
-under the `loop` skill (e.g. `/loop 5m /pr-shepherd <pr>`). For ad-hoc nudges,
-re-invoke manually. State is carried between invocations via `$ARGUMENTS` or via
-the surrounding conversation when iterations run back-to-back inside one Claude
-session.
+**One invocation = one iteration.** The skill does not sleep or self-loop — the
+model exits after a single pass, so something external drives the cadence (see
+*Step 5*). State carries between invocations via `$ARGUMENTS` or the
+surrounding conversation — see *State carried between invocations*.
 
 ## Run the loop session on GLM-5.2 (cheap-first reviews)
 
@@ -103,7 +99,6 @@ Examples:
 [shepherd] step 1 — PR is draft, marking ready before continuing
 [shepherd] step 2 round 1 — diff since a1b2c3d touches src/foo.ts, running qa-swarm
 [shepherd] step 2 round 1 — dispatching review-triage (sonnet runner)
-[shepherd] step 2 round 1 — dispatching simplify (sonnet runner)
 [shepherd] step 2 round 2 — fixes landed in round 1, re-running qa-swarm + simplify
 [shepherd] step 2 — round 2 dry, quality loop converged after 2 rounds
 [shepherd] step 3 — dispatching ci-shepherd against H1=def4567
@@ -519,32 +514,36 @@ The on-disk SKILL.md and the store skill are the same content, so the sub-brief
 lives OnceAndOnlyOnce — this skill just sources it from whichever location is
 present.
 
-Append the matching **override brief** so the runner behaves as a sub-step, not
-a standalone session (parallel to how qa-swarm overrides its security-audit
-body):
+Append an **override brief** so the runner behaves as a sub-step, not a
+standalone session (parallel to how qa-swarm overrides its security-audit body).
 
-- **review-triage:** "Sub-step, not standalone. Skip your Step 1 (resolve) and
-  Step 2 (run qa-swarm) — the caller already resolved the PR and ran qa-swarm
-  this round. Triage existing threads only. Never call `AskUserQuestion`;
+**Sub-step contract — prepend to every brief:** "Sub-step, not standalone.
+Operate on the inputs supplied; do not resolve or rediscover them. Never call
+`AskUserQuestion`. Do not narrate to the user — collect your narration lines
+into a `narration` array. End with the single structured result from your
+*Step 5: Report* and nothing after it." `simplify` is the exception: it has no
+Report step, so only the never-ask rule applies to it.
+
+Then append the skill-specific delta:
+
+- **review-triage:** "Skip your Step 1 (resolve) and Step 2 (run qa-swarm) —
+  the caller already did both this round. Triage existing threads only;
   genuinely ambiguous threads (after applying your paul-pair gate) go to
-  `deferred_threads` and never terminate. Inputs supplied: PR number,
-  owner/repo, base, `head_sha_in`, `qa_swarm_marker_sha`, `deferred_threads`.
-  Do not narrate to the user — collect `[triage]` lines into `narration`.
-  Return the structured result from your *Step 5: Report* and stop."
+  `deferred_threads` and never terminate. Inputs: PR number, owner/repo, base,
+  `head_sha_in`, `qa_swarm_marker_sha`, `deferred_threads`. Narrate `[triage]`
+  lines."
+- **ci-shepherd:** "Inputs: PR number, owner/repo, base, `head_sha_in` —
+  operate against `head_sha_in`. Narrate `[ci]` lines. Diagnose every failing
+  leaf job, perform at most one verified repair commit, rerun likely
+  flaky/infrastructure jobs once, and do not wait for fresh remote CI. On a base
+  conflict do not resolve it — record it in `base_update` and continue; the
+  human owns the conflict."
 - **simplify wrapper:** "Invoke the `simplify` skill (`Skill` tool,
   `skill: 'simplify'`) against the diff between `<base>` and the current HEAD
   on PR `<pr_number>` in `<owner>/<repo>`. Let it apply its own fixes to the
-  working tree. Do not commit or push — the caller does that. Never call
-  `AskUserQuestion`. Report back: the list of files changed (or 'no changes'
-  if it found nothing to simplify), and a one-line summary per file."
-- **ci-shepherd:** "Sub-step, not standalone. Never call `AskUserQuestion`. If
-  `gh pr update-branch` reports a base conflict do not resolve it — record it in
-  `base_update` and continue; the human owns the conflict. Inputs supplied: PR
-  number, owner/repo, base, `head_sha_in` — operate against `head_sha_in`. Do
-  not narrate to the user — collect `[ci]` lines into `narration`. Return the
-  structured result from your *Step 5: Report* and stop. Diagnose every failing
-  leaf job, perform at most one verified repair commit, rerun likely
-  flaky/infrastructure jobs once, and do not wait for fresh remote CI."
+  working tree. Do not commit or push — the caller does that. Report back: the
+  list of files changed (or 'no changes' if it found nothing to simplify), and
+  a one-line summary per file."
 
 ## Dependencies
 
@@ -562,7 +561,7 @@ body):
   dispatched as a plain `model: 'sonnet'` `Agent` that calls `Skill("simplify")`
   itself, since there's no SKILL.md body to load-then-spawn.
 - `gh` CLI (repo, pr, api, label, `pr update-branch` commands).
-- `git` for committing/pushing `simplify`'s changes (and inside the sub-skills).
+- `git` for committing and pushing `simplify`'s changes.
 - The `Agent` tool with `model: 'sonnet'` for the three sub-skill runners.
 
 ## Graceful degradation
