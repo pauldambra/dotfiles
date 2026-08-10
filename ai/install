@@ -6,7 +6,6 @@ cd "$(dirname "$0")"
 AI_DIR=$(pwd -P)
 
 instructions_source="$AI_DIR/CLAUDE.md"
-instructions_target="$HOME/AGENTS.md"
 legacy_target="$HOME/CLAUDE.md"
 
 if [ -L "$legacy_target" ]; then
@@ -14,17 +13,28 @@ if [ -L "$legacy_target" ]; then
   echo "Removed legacy symlink: $legacy_target"
 fi
 
-if [ -L "$instructions_target" ]; then
-  rm "$instructions_target"
-  echo "Removed existing symlink: $instructions_target"
-fi
+link_instructions() {
+  target="$1"
+  mkdir -p "$(dirname "$target")"
 
-if [ -e "$instructions_target" ]; then
-  echo "Warning: $instructions_target exists and is not a symlink. Skipping."
-else
-  ln -s "$instructions_source" "$instructions_target"
-  echo "Linked CLAUDE.md to $instructions_target"
-fi
+  if [ -L "$target" ]; then
+    rm "$target"
+    echo "Removed existing symlink: $target"
+  fi
+
+  if [ -e "$target" ]; then
+    echo "Warning: $target exists and is not a symlink. Skipping."
+  else
+    ln -s "$instructions_source" "$target"
+    echo "Linked CLAUDE.md to $target"
+  fi
+}
+
+# Claude Code reads $HOME/AGENTS.md. PostHog Code's instruction sync instead
+# scans ~/.agents, ~/.codex and ~/.claude, so it needs its own copy — ~/.agents
+# because Claude Code doesn't read it, so the instructions can't load twice.
+link_instructions "$HOME/AGENTS.md"
+link_instructions "$HOME/.agents/AGENTS.md"
 
 CLAUDE_SKILLS_DIR="$HOME/.claude/skills"
 mkdir -p "$CLAUDE_SKILLS_DIR"
