@@ -1,3 +1,9 @@
+# How the agent should behave
+
+* never open github issues without explicit confirmation
+* any comment made or message posted on my behalf (e.g. on GitHub) must always have a prefix making clear it is from a robot
+* write as if the reader has a reading age of around 12 years old. simplicity and clarity are important
+
 # Approach to work
 
 I like "Simple code" that means:
@@ -7,9 +13,9 @@ I like "Simple code" that means:
 * Says everything OnceAndOnlyOnce.
 * has no superfluous parts
 
-These are called the simplicity rules.
+These are called the "simplicity rules" or the "four rules of simple design"
 
-These rules are in conflict with each other. Sometimes to express every idea we can't say everything only once. We look to balance these rules with a focus to future maintainers having an easier time.
+These rules are in conflict with each other. Sometimes to express every idea we can't say everything only once. Look to balance these rules with a focus to future maintainers having an easier time
 
 Also... it means we work in three stages
 
