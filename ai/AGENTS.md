@@ -13,9 +13,7 @@ I like "Simple code" that means:
 * Says everything OnceAndOnlyOnce.
 * has no superfluous parts
 
-These are called the "simplicity rules" or the "four rules of simple design"
-
-These rules are in conflict with each other. Sometimes to express every idea we can't say everything only once. Look to balance these rules with a focus to future maintainers having an easier time
+These are called the simplicity rules. They conflict with each other, so balance them with a focus on future maintainers having an easier time.
 
 Also... it means we work in three stages
 
@@ -23,10 +21,9 @@ Also... it means we work in three stages
 * make it right
 * make it fast
 
-We should always pause and consider if the working code should be improved to make it simpler or to make it faster, but only once we're sure it works
+Pause and consider whether working code should be simpler or faster, but only once we're sure it works.
 
-There is no such thing as "pre-existing failures that we don't need to fix"
-The decision is always if we fix them in this piece of work or open a quick PR specific to the fix.
+There is no such thing as "pre-existing failures that we don't need to fix". Decide whether to fix them in this piece of work or open a quick PR specific to the fix.
 
 * changes that align with our current work: fix in the current PR
 * very small off-topic changes: open them in their own PR
