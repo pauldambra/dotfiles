@@ -5,7 +5,7 @@
 cd "$(dirname "$0")"
 AI_DIR=$(pwd -P)
 
-instructions_source="$AI_DIR/CLAUDE.md"
+instructions_source="$AI_DIR/AGENTS.md"
 legacy_target="$HOME/CLAUDE.md"
 
 if [ -L "$legacy_target" ]; then
@@ -26,7 +26,7 @@ link_instructions() {
     echo "Warning: $target exists and is not a symlink. Skipping."
   else
     ln -s "$instructions_source" "$target"
-    echo "Linked CLAUDE.md to $target"
+    echo "Linked AGENTS.md to $target"
   fi
 }
 
