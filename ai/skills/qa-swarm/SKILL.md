@@ -1,13 +1,13 @@
 ---
 name: qa-swarm
 description: >
-  Orchestrates a cheap-first PR review: a single router reviewer (GLM-5.2)
-  does the first pass and delegates to stronger models (qa-team,
-  paul-reviewer, xp-reviewer, security-audit on opus/fable/gpt-sol/kimi-k3)
-  only for the parts it judges complex or dangerous, posting findings as
-  inline GitHub comments. Use when the user asks for "qa-swarm", "swarm
-  review", or wants a multi-perspective review posted to their PR. Accepts an
-  optional PR number or base branch as argument.
+  Orchestrates a cheap-first PR review: a single router reviewer (gpt-sol) does
+  the first pass and delegates to stronger models (qa-team, paul-reviewer,
+  xp-reviewer, security-audit on kimi, escalating to opus then fable) only for
+  the parts it judges complex or dangerous, posting findings as inline GitHub
+  comments. Use when the user asks for "qa-swarm", "swarm review", or wants a
+  multi-perspective review posted to their PR. Accepts an optional PR number or
+  base branch as argument.
 ---
 
 # QA Swarm: Multi-Perspective PR Review
@@ -76,7 +76,7 @@ the user and mark it unavailable — the router will route around it (see
 
 Issue all four loads in **parallel** (single message, four tool calls) so the
 MCP round-trip does not serialize with the on-disk reads. The router (Step 3a)
-runs on GLM-5.2 and has no body to load — it's a direct prompt.
+runs on `gpt-sol` and has no body to load — it's a direct prompt.
 
 **qa-team** (try these paths in order, stop at first hit):
 1. `<repo_root>/.agents/skills/qa-team/SKILL.md` (use `git rev-parse --show-toplevel`)
@@ -126,25 +126,21 @@ survived.
 
 #### Model roster
 
-- **Router (cheap):** `@cf/zai-org/glm-5.2` — the entry reviewer. Pin it
-  explicitly on the router Agent. If the harness rejects the non-Claude model
-  string, **omit `model`** so the router inherits the session model, and run
-  the shepherd session on glm-5.2 (`/model @cf/zai-org/glm-5.2`) so
-  inheritance lands on glm-5.2. Either path gives a cheap first pass. If
-  glm-5.2 is unavailable at all, fall back to `sonnet` for the router.
+Follows `pr-shepherd`'s model policy — cheapest first, then validate:
+
+- **Router (cheap, most tasks):** `gpt-sol` — the entry reviewer, pinned
+  explicitly on the router Agent. If `gpt-sol` is unavailable, fall back to
+  `kimi` for the router pass.
 - **Delegation targets (stronger), the router's choice** — pick the least
   expensive target that can cover the concern; reserve the deepest for when
   the cheaper tier wouldn't catch it:
-  - `opus` — voice/style/logic lens (paul-reviewer, xp-reviewer). Claude
-    enum, always pinnable.
-  - `fable` — deepest technical lens (qa-team specialists, security-audit).
-    Claude enum, always pinnable. If the harness rejects `'fable'` (older
-    Claude Code), fall back to `'opus'` for that agent.
-  - `gpt-sol` — soon; another strong option for the opus lenses. When its
-    pin string is known and accepted, the router may choose it; otherwise it
-    falls back to `opus`.
-  - `kimi-k3` — soon; another deep option for the fable lenses; falls back
-    to `fable` when not pinnable.
+  - `kimi` — the default delegation target for anything the router judges
+    complex or dangerous, across all four lenses (qa-team, paul-reviewer,
+    xp-reviewer, security-audit).
+  - `opus` — fall back here when `kimi` is unavailable.
+  - `fable` — final escalation: a delegation `kimi`/`opus` couldn't resolve
+    with confidence, or reviewers disagree and the disagreement needs a
+    stronger read.
 
 #### 3a. Router pass
 
@@ -153,7 +149,7 @@ changed-file list, and the commit log. Tell it:
 
 - You are the sole first-pass reviewer. Review the full diff for
   correctness, bugs, security, and style. Read surrounding code context for
-  each change (at least 50 lines above/below) before judging.
+  each change (at least 50 lines above and below) before judging.
 - After reviewing, assess the change's **danger/complexity** (blast
   radius): LOW / MEDIUM / HIGH / CRITICAL, using the rubric below.
 - Decide whether to **delegate** part or all of the review to a stronger
@@ -184,7 +180,7 @@ DELEGATION_PLAN:
 danger: <LOW|MEDIUM|HIGH|CRITICAL>
 confidence: <HIGH|MEDIUM|LOW>
 delegations:
-- model: <opus|fable|gpt-sol|kimi-k3> | reviewer: <qa-team|paul-reviewer|xp-reviewer|security-audit|general> | scope: <file paths / hunks / "full"> | reason: <one line>
+- model: <kimi|opus|fable> | reviewer: <qa-team|paul-reviewer|xp-reviewer|security-audit|general> | scope: <file paths / hunks / "full"> | reason: <one line>
 ...
 (empty list if no delegation)
 ```
@@ -201,8 +197,8 @@ Each returns STRUCTURED_FINDINGS.
 
 The four subsections below are the **delegation targets** — their prompt
 shapes, reused verbatim when the router delegates to that reviewer. Pin the
-chosen model on each Agent (opus/fable directly; gpt-sol/kimi-k3 when
-pinnable, else their Claude fallback). Scope the diff material you pass to
+chosen model on each Agent (`kimi`, `opus`, or `fable`, per the delegation
+plan). Scope the diff material you pass to
 each reviewer to its `scope` rather than the whole PR diff. Each delegated
 reviewer is told it is the sole reviewer for its scope — no mention of other
 reviewers or the router (same independence rule as before).
@@ -466,11 +462,11 @@ per-finding, and resolvable. Only the top-level summary is deduplicated.
 
 ### Graceful degradation
 
-- **Router model (`@cf/zai-org/glm-5.2`) unavailable or rejected by the
-  harness:** Run the router with no `model` pin (inherits the session model)
-  if the session is already on glm-5.2; otherwise fall back to `sonnet` for
-  the router. The router still produces a delegation plan; only the cost of
-  the first pass changes.
+- **Router model (`gpt-sol`) unavailable or rejected by the harness:** Run
+  the router with no `model` pin (inherits the session model) if the session
+  is already on `gpt-sol`; otherwise fall back to `kimi` for the router. The
+  router still produces a delegation plan; only the cost of the first pass
+  changes.
 - **A delegation target's body not found (qa-team files, paul-reviewer,
   xp-reviewer disk/store, security-audit MCP):** Skip that delegation target,
   warn the user, and let the router re-route that concern to another target
