@@ -2,10 +2,8 @@
 name: ci-shepherd
 description: >
   Keeps a PR current with its base, diagnoses failing CI, fixes failures caused
-  by the PR, and reruns likely flaky or infrastructure jobs once. Use when the
-  user says "/ci-shepherd", "fix CI", "update this branch", "is my branch
-  behind?", "keep this branch current", or "what's CI saying?". Accepts an
-  optional PR number or URL. Reads no review or stamphog state.
+  by the PR, and reruns likely flaky or infrastructure jobs once. Use for
+  /ci-shepherd, fix CI, branch currency, or CI status.
 ---
 
 # CI Shepherd
