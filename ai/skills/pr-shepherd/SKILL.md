@@ -18,8 +18,9 @@ managing the `stamphog` approval label on top of them:
   with `paul-pair`'s autonomy ladder folded into the ambiguous bucket.
 - **`simplify`** — reuse/simplification/efficiency/altitude pass that edits the
   working tree. It posts no comments; this skill owns its commit.
-- **`ci-shepherd`** — keeps the branch current, diagnoses CI, fixes PR-caused
-  failures, reruns likely flaky jobs once.
+- **`ci-shepherd`** — keeps the branch current, reads the shared CI report,
+  diagnoses failed checks and report warnings, fixes PR-caused issues, and reruns
+  likely flaky jobs once.
 
 The first three run together in a **quality loop** (Step 2) so a fix made in
 round 1 gets re-reviewed in round 2 within the same iteration. On top of those,
@@ -109,6 +110,8 @@ sub-skills receive what they need and return updates, but never persist state.
   `review-triage` skips them and stops nagging.
 - `last_updated_at` — the PR's `updatedAt` at the end of the previous iteration.
   Step 1's fast path compares against it. `null` initially.
+- `bot_reviews_pending` — set by Step 1 when it flips a draft ready, cleared in
+  Step 2d once a bot review lands. `false` initially.
 
 ## Workflow — one iteration
 
@@ -162,14 +165,20 @@ Record: PR number, owner/repo, base branch, HEAD SHA (`H0`), state, draft state,
 final status.
 
 **Fast path.** On a re-invocation with carried state, if `H0` == the previous
-HEAD *and* `updatedAt` == `last_updated_at` *and* `stamphog` is present, make one
-`gh pr checks` query. No failed checks → narrate `[shepherd] step 1 — no change
-since <short_sha>, stamphog present, no failing CI — skipping iteration`, print
-the state line, exit. Any failure → narrate that CI is failing and continue. CI
-status changes may not advance `updatedAt`, so they must pass this gate.
+HEAD *and* `updatedAt` == `last_updated_at` *and* `stamphog` is present, query
+`gh pr checks` and read the shared CI report as in `ci-shepherd` Step 3. Skip only
+when no check fails and no report warning needs work. Then narrate `[shepherd]
+step 1 — no change since <short_sha>, stamphog present, no CI or report work —
+skipping iteration`, print the state line, and exit. Otherwise narrate that CI or
+its report needs work and continue. CI status and report changes may not advance
+`updatedAt`, so they must pass this gate.
 
 If `isDraft == true`, run `gh pr ready <pr_number>` and carry on — invoking the
 shepherd is itself the signal that the PR is ready. Do not stop on draft.
+
+Flipping a draft ready is also what *triggers* the repo's bot reviewers, and they
+take minutes to post. Set `bot_reviews_pending = true` when you flip it, so round
+1 does not read a not-yet-reviewed PR as a clean one.
 
 If `gh pr view` finds no PR, do **not** terminate silently. Ask the user
 (`AskUserQuestion`) to paste a PR number/URL, have the shepherd open one via
@@ -213,8 +222,21 @@ way.
 
 **d. Dryness and loop control.** A round is **dry** iff review-triage reported
 `resolved == 0 and actioned == 0 and promoted == 0`, its returned
-`deferred_threads` added nothing, simplify changed 0 files, and no
-`validation_request` is pending.
+`deferred_threads` added nothing, simplify changed 0 files, no
+`validation_request` is pending, and `bot_reviews_pending` is false.
+
+When `bot_reviews_pending` is true the round cannot be dry — the threads that
+matter have not been posted yet. Before the next round's triage, poll once:
+`gh pr view <pr_number> --json latestReviews --jq '[.latestReviews[].author.login]'`.
+If nothing has posted, wait ~90s and poll once more. Clear the flag as soon as a
+bot review lands, or after that second poll — a reviewer that never posts must
+not hold the loop open.
+
+Run both polls inline, in this loop's own turn. Never hand the poll to `Monitor`,
+to a background `Agent`, or to anything with `run_in_background: true`, and never
+end your turn waiting on its result. Nothing reports back, so the iteration
+strands and a human has to restart it. The sub-step contract forbids this for
+runners; it binds the top-level loop the same way.
 
 - Dry, and (`r >= 2` or qa-swarm ran this round): stop. This round's final HEAD
   is `H1`.
@@ -228,12 +250,31 @@ way.
 Dispatch as an `Agent` at the bottom of the ladder, with `head_sha_in = H1`, the
 PR number / owner / repo / base, and the diff path. Relay its `narration`
 verbatim. Record `new_head_sha` as `H2`, the observed `ci` buckets, and the
-`repair` result. The CI buckets are the pre-repair snapshot when a repair moved
-HEAD; fresh remote CI is evaluated next iteration.
+`repair` result, including its CI-report warning inventory. The CI buckets are
+the pre-repair snapshot when a repair moved HEAD; fresh remote CI is evaluated
+next iteration.
 
 If `base_update.status == "conflict"`, surface the one-line reason and
 **continue** to Step 4 — a base conflict blocks merge (the human's call), not
 review or stamping.
+
+**Stacked PRs.** When the PR's base is another PR's branch, tell the runner not
+to base-update, restack, or force-push, and do not bring a base in for a lower
+layer either: the merge commit that creates breaks restack semantics, and a
+signed-history rewrite refuses a history containing one. Restacking is the
+caller's job and it is not optional — a commit you land on any layer leaves
+every layer above it on a stale base. Rebase them bottom-up yourself, and
+republish each one **onto the layer below it**, never onto the merge-base with
+the default branch: that default re-creates the lower commits under fresh SHAs,
+so a branch stops containing its own base and the stack silently detaches. Then
+re-read every head, because each republish assigns a new one and Step 4's
+`headRefOid` guard compares against it.
+
+Before judging that a branch needs its base at all, check whether the repo
+actually gates on it. A `mergeStateStatus` of `BLOCKED` is a missing approval,
+not a stale base; `BEHIND` is the one that means out-of-date-and-required. Where
+a merge queue tests the merge itself, updating a behind-but-unblocked branch buys
+nothing and costs a restack and a CI fan-out per layer.
 
 ### Step 4: Apply `stamphog` and read its verdict
 
@@ -322,9 +363,9 @@ history says why.
 Stop cleanly and print the final summary when **any** of:
 
 - PR is `MERGED` or `CLOSED`.
-- `stamphog` is applied for the current SHA, CI has no failures needing an
-  autonomous repair, no new bot threads since last iteration, and the only
-  unresolved threads are in `deferred_threads`.
+- `stamphog` is applied for the current SHA, CI has no failed checks or
+  CI-report warnings needing an autonomous repair, no new bot threads since last
+  iteration, and the only unresolved threads are in `deferred_threads`.
 - The user interrupts.
 
 CI failures are **not** report-only: `ci-shepherd` must diagnose them and exhaust

@@ -126,7 +126,20 @@ survived.
 
 #### Model roster
 
-Follows `pr-shepherd`'s model policy — cheapest first, then validate:
+Follows `pr-shepherd`'s model policy — cheapest first, then validate.
+
+**Resolve the ladder against the models this harness actually accepts for an
+`Agent` before you pin any of them.** The names below are the PostHog Desktop
+ladder. A cloud task on the Claude runtime has `haiku` → `sonnet` → `opus` →
+`fable` instead, and `gpt-sol` and `kimi` do not exist there at all — pinning
+one fails, and the *Graceful degradation* note at the end of this skill cannot
+rescue it, because its own fallback is `kimi` too. When the caller passes a
+model policy override, take its ladder verbatim and ignore every model name in
+this section. Then map role for role: entry reviewer at the bottom of the
+ladder, default delegation target one step up, next fallback above that,
+deepest escalation at the top.
+
+The roles, named here with the Desktop ladder:
 
 - **Router (cheap, most tasks):** `gpt-sol` — the entry reviewer, pinned
   explicitly on the router Agent. If `gpt-sol` is unavailable, fall back to
@@ -157,6 +170,13 @@ changed-file list, and the commit log. Tell it:
   Minimise cost: delegate only what your own pass can't safely cover, scoped
   to the concerning files/hunks. Delegating nothing (low danger, high
   confidence) is the cheap path working as intended — do not pad the plan.
+- **One delegation is mandatory, whatever your own danger grade, when the diff
+  trips an objective line:** more than ~400 lines, or it touches a production
+  deploy or release path, auth, permissions, billing, a migration, or
+  concurrency. Scope it to the hunks you are least sure of. A LOW grade does
+  not excuse it, because the grade is the thing being checked: a router has
+  graded an 806-line rewrite of a production deploy workflow LOW with high
+  confidence and no delegation, on a diff that carried a HIGH defect it missed.
 - Return your own findings in STRUCTURED_FINDINGS form, then a
   DELEGATION_PLAN block.
 
