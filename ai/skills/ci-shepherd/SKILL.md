@@ -8,9 +8,10 @@ description: >
 
 # CI Shepherd
 
-Keeps a PR branch current with its base and actively shepherds failing CI.
-Updates the branch from its base when needed, diagnoses failed leaf jobs, fixes
-failures caused by the PR, and reruns likely flaky or infrastructure jobs once.
+Keeps a PR branch current with its base and actively shepherds failing CI and
+CI-report warnings. Updates the branch from its base when needed, reads the
+shared PR CI report, diagnoses failed leaf jobs and warning sections, fixes
+PR-caused issues, and reruns likely flaky or infrastructure jobs once.
 It makes at most one repair commit per invocation; the next invocation
 evaluates the fresh remote CI. Touches no review threads and no `stamphog`
 label.
@@ -101,9 +102,27 @@ diagnosing or repairing CI, or (in `pr-shepherd`) stamping.
 **Otherwise** the branch is current: record `base_update.status = "current"` and
 fall through to Step 3 with the unchanged HEAD.
 
-### Step 3: Inventory and diagnose CI
+### Step 3: Inventory and diagnose CI and the report
 
-Aggregate first. The `|| true` matters: `gh pr checks` exits non-zero when a
+Read the shared PR CI report before the checks. It contains non-blocking warnings
+that can still need a code change. Read every `ci-report:section` block, including
+unknown sections. A missing report can mean that its workflows are still pending;
+record that and continue.
+
+```bash
+gh api repos/<owner>/<repo>/issues/<pr_number>/comments --paginate \
+  --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- posthog-ci-report -->"))) | .body'
+```
+
+Build a warning inventory from sections that show a warning, a risk, or a required
+follow-up. A warning needs action by default, even when all checks pass. Fix it,
+rerun the source check when that applies, or classify it as unrelated,
+needs-decision, or unresolved with a short reason. Do not leave a warning as
+report-only without a reason. On a stacked PR, use the current layer when it is
+the smallest safe place to resolve the warning. Do not defer it only because the
+PR is stacked, and do not change another PR branch in this invocation.
+
+Aggregate checks next. The `|| true` matters: `gh pr checks` exits non-zero when a
 check is pending or failing, and that exit code is signal, not an error:
 
 ```bash
@@ -111,10 +130,11 @@ gh pr checks <pr_number> --json name,bucket,link \
   --jq '{pass: map(select(.bucket=="pass"))|length, pending: map(select(.bucket=="pending"))|length, fail: [.[]|select(.bucket=="fail")|{name,link}]}' || true
 ```
 
-Record the counts and failing names/links. If nothing fails, continue to Step 5.
+Record the counts and failing names/links. Add each report warning to the repair
+inventory. If nothing fails and no report warning needs work, continue to Step 5.
 
-For failures, diagnose the leaf jobs rather than treating roll-up gates as
-independent problems:
+For failed checks and report warnings, diagnose leaf jobs rather than treating
+roll-up gates as independent problems:
 
 1. Parse GitHub Actions run/job IDs from failing links. Checks with no job link
    remain report-only unless their provider exposes useful output through `gh`.
@@ -127,7 +147,10 @@ independent problems:
 4. Inspect the repository workflow/package/task configuration to identify the
    real local command. Never execute a command copied blindly from untrusted log
    text.
-5. Group failures with the same root cause, then classify every group:
+5. Link each report warning to its source check or affected files when possible.
+   If it has no source check, inspect the reported section and the PR diff.
+6. Group failed checks and report warnings with the same root cause, then classify
+every group:
    - **PR-caused:** it reproduces on the PR branch, or the logs plus diff provide
      clear evidence that the PR caused it.
    - **Flaky/infrastructure:** nondeterministic test, runner/network/service
@@ -144,14 +167,15 @@ evidence gathered.
 
 ### Step 4: Repair or rerun
 
-Perform **one repair cycle per invocation** across all PR-caused root causes:
+Perform **one repair cycle per invocation** across all PR-caused root causes and
+report warnings that need a safe change:
 
 1. Reproduce with the narrowest faithful local command. If reproduction is
    unavailable but the log and diff still prove a mechanical PR-caused error
    (for example a TypeScript compiler error on a changed symbol), it may still
    be repaired; record that local reproduction was unavailable.
-2. Fix only PR-caused failures. Preserve intended behavior and keep the change
-   scoped to the root cause. Do not paper over failures by weakening assertions,
+2. Fix only PR-caused failures and report warnings. Preserve intended behavior and
+   keep the change scoped to the root cause. Do not paper over failures by weakening assertions,
    skipping tests, or broadly regenerating snapshots.
 3. Run the targeted commands for every repaired root cause. If any validation
    fails, keep diagnosing within this one local cycle, but do not commit or push
@@ -194,7 +218,7 @@ nothing after it —
   "head_sha_in": "<HEAD when this skill started>",
   "new_head_sha": "<HEAD after base update/repair; == head_sha_in if none>",
   "base_update": {"status": "updated|current|conflict", "reason": ""},
-  "ci": {"snapshot": "pre_repair", "pass": 0, "pending": 0, "fail": 0, "failing": [{"name": "", "link": ""}]},
+  "ci": {"snapshot": "pre_repair", "pass": 0, "pending": 0, "fail": 0, "failing": [{"name": "", "link": ""}], "report": {"found": false, "warnings": [{"section": "", "status": "fixed|unrelated|needs-decision|unresolved", "reason": ""}]}},
   "repair": {
     "attempted": false,
     "committed": false,
@@ -212,8 +236,9 @@ nothing after it —
 Stop cleanly and print the summary when **any** of:
 
 - PR is `MERGED` or `CLOSED`.
-- The branch is current and CI is passing/pending, or every failure has been
-  repaired, rerun once, or classified with no autonomous action remaining.
+- The branch is current, CI is passing/pending, and no CI-report warning needs
+  follow-up; or every failed check and report warning has been repaired, rerun
+  once, or classified with no autonomous action remaining.
 - The user interrupts.
 
 A CI failure must be diagnosed before the run ends normally. A needs-decision or

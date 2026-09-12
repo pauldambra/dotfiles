@@ -43,6 +43,14 @@ prompt carries the **simplify wrapper brief** and tells it to invoke
 and load-then-spawn its body with the same wrapper. The runner edits the working
 tree, does not commit or push, and reports the files it changed.
 
+Spawn any runner that edits code in the caller's own working tree. Never give it
+`isolation: "worktree"`. A fresh worktree can start from the base branch rather
+than the PR's HEAD, so the runner reviews the wrong tree, and anything it does
+edit is invisible to the caller that has to commit it. One observed simplify
+runner reported the PR's own existing commit as its changed files while the
+caller's tree stayed clean. Confirm any file-change claim with
+`git status --porcelain` in your own tree before you commit for it.
+
 Run `review-triage` first. Run `ci-shepherd` after the quality loop converges.
 
 **Prefer letting the child fetch its own body.** When the Agent can call
@@ -79,7 +87,11 @@ tell the runner to read files only where the patch is not enough.
 > a risky change, return a `validation_request` and do not edit, commit, or push
 > that change. Read the supplied diff before reading any file; read a file only
 > where the diff is insufficient. End with the single structured result from your
-> Report step and nothing after it.
+> Report step and nothing after it. Any sub-agent you spawn must run with
+> `run_in_background: false`, so it finishes inside your turn. Never end your turn
+> waiting on background work — no notification will reach you, and the dispatch is
+> lost. If a nested skill would background work you cannot wait on, do not invoke
+> it; do the analysis directly instead.
 
 Simplify has no Report step, so its wrapper must add `validation_request` to its
 normal file-change result when needed.
@@ -108,6 +120,14 @@ normal file-change result when needed.
   `visual-review-runs-finalize-create` (`approve_all: true`,
   `commit_to_github: true`); the server commits the trimmed baseline to the
   branch, which moves HEAD. Any changed or new snapshot stays needs-decision."
+  Validate what it returns before you trust it: `ci` must carry
+  `{pass,pending,fail,failing}`, and `base_update.status` must be `updated`,
+  `current`, or `conflict`. A malformed shape is evidence the runner skipped the
+  real steps, not a formatting slip. One observed runner never called
+  `gh pr checks` or `gh pr view --json mergeable` at all. It substituted local
+  `mypy`, `ruff`, and pytest runs, then returned `ci` as an array of stage
+  objects and `base_update.status: "not_attempted"`, and the caller had to redo
+  the whole CI read. Reissue at the next model up rather than accepting it.
 - **simplify wrapper:** "Invoke the `simplify` skill (`Skill` tool,
   `skill: 'simplify'`) — or, when this brief carries the store-fetched simplify
   body, follow that body instead — against the diff at `<diff_path>` (base
@@ -133,4 +153,9 @@ pending `validation_request` means the quality-loop round is not dry.
 
 Keep the sub-skill instructions in the sub-skill itself. This skill adds only the
 inputs, the model policy, and the sub-step override. Git work uses plain `git`
-and `gh`.
+and `gh` — **unless the environment blocks them.** A harness that requires
+signed commits rejects `git commit`, `git push`, and `git push --force`
+outright, and offers a tool in their place. Establish which applies before the
+first dispatch, and when they are blocked, name the working mechanism in every
+brief that may commit. A runner that discovers this mid-task either fails its
+commit or reports a file change it never landed.
