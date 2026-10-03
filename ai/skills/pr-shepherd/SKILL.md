@@ -7,13 +7,13 @@ description: >
   runners the diff rather than making them re-read it. Use for /pr-shepherd,
   babysitting, or driving the full PR review and CI loop.
 ---
-
 # PR Shepherd
 
 Drives a PR through the review loop by orchestrating four focused sub-skills and
 managing the `stamphog` approval label on top of them:
 
-- **`qa-swarm`** — multi-reviewer bug/quality pass that posts PR comments.
+- **`qa-swarm`** — routed bug/quality review that posts PR comments and, when
+  evidence warrants it, delegates a systems-thinking lens for shared causes.
 - **`review-triage`** — triages qa-swarm + bot threads (fix / resolve / defer),
   with `paul-pair`'s autonomy ladder folded into the ambiguous bucket.
 - **`simplify`** — reuse/simplification/efficiency/altitude pass that edits the
@@ -66,14 +66,22 @@ Resolve the ladder against the models this harness will actually accept for a
 subagent, then start every runner at the bottom of it:
 
 - **PostHog Desktop:** `gpt-sol` → `kimi` → `opus` → `fable`.
-- **Cloud task on the Claude runtime:** `haiku` → `sonnet` → `opus` → `fable`.
+- **Cloud task on the Claude runtime:** `sonnet` → `opus` → `fable`. Do not start
+  runners on `haiku`: `haiku` runners skipped real steps often enough that the
+  reruns cost more than they saved. `opus` costs 2x `sonnet` per input and output
+  token, so start on `sonnet` and move up only when the evidence needs it.
+
+In both ladders, `opus` means Opus 5.5 (`claude-opus-5-5`) and `sonnet` means
+Sonnet 5 (`claude-sonnet-5`). If the harness takes a full model ID, pass the ID,
+not the short name.
 
 **Check which ladder applies before dispatching.** If you cannot enumerate the
-models the `Agent` tool accepts, assume the cloud-task ladder. Do not fall
-straight through to `opus` because a Desktop alias was rejected — silently
-landing every runner on the session model is the exact failure this ladder exists
-to prevent, and it is the difference between a loop that fits its budget and one
-that does not.
+models the `Agent` tool accepts, try the first Desktop alias; if the harness
+rejects it, use the cloud-task ladder. On Desktop, do not fall straight through
+to `opus` because one alias was rejected — try the next Desktop alias first.
+Landing every Desktop runner on the session model is the exact failure this
+ladder exists to prevent, and it is the difference between a loop that fits its
+budget and one that does not.
 
 Get a concrete result from the cheapest available model first, then validate it:
 
@@ -112,6 +120,10 @@ sub-skills receive what they need and return updates, but never persist state.
   Step 1's fast path compares against it. `null` initially.
 - `bot_reviews_pending` — set by Step 1 when it flips a draft ready, cleared in
   Step 2d once a bot review lands. `false` initially.
+
+In a stack, keep all of the state above **per layer**, keyed by PR number. A
+marker for one layer says nothing about another layer, and a restack gives every
+layer above the change a new HEAD.
 
 ## Workflow — one iteration
 
@@ -164,6 +176,16 @@ Record: PR number, owner/repo, base branch, HEAD SHA (`H0`), state, draft state,
 `updatedAt`, label names. If state is `MERGED` or `CLOSED`, **terminate** with a
 final status.
 
+**Stack check.** Find out if the PR is a layer in a stack. Its base is another
+open PR's branch when `gh pr list --repo <owner>/<repo> --head <base> --state
+open --json number --jq length` is above 0. Another PR can also use this PR's
+head as its base. Read the whole stack with `gh api
+repos/<owner>/<repo>/pulls/<n> --jq .stack`. In a Desktop worktree `gh stack
+view` can say "not part of a stack" when the stack exists, so trust the API.
+To work on a layer locally, use `gh stack checkout <n>`. Never run `gh stack
+merge`: it lands the chain outside the merge queue. Record the layers bottom to
+top. Run Steps 2 to 4 for one layer at a time, bottom first.
+
 **Fast path.** On a re-invocation with carried state, if `H0` == the previous
 HEAD *and* `updatedAt` == `last_updated_at` *and* `stamphog` is present, query
 `gh pr checks` and read the shared CI report as in `ci-shepherd` Step 3. Skip only
@@ -194,24 +216,45 @@ one round and say so.
 
 For round `r`, against the previous round's HEAD (`H0` for round 1):
 
-**a. qa-swarm when warranted.** Run when `qa_swarm_marker_sha` is `null`, or the
-round's starting HEAD != `qa_swarm_marker_sha` and the diff
+**a. qa-swarm when warranted.** When `qa_swarm_marker_sha` is `null`, first read
+the PR's `<!-- qa-swarm-summary -->` comment in one call (`gh api
+repos/<owner>/<repo>/issues/<pr>/comments --jq` with the body capped at 400
+chars). If its verdict line names the round's starting HEAD (`@ <short_sha>`),
+set `qa_swarm_marker_sha` to that HEAD and do not run qa-swarm again: that
+review already covers this tree. Otherwise run when `qa_swarm_marker_sha` is
+`null`, or the round's starting HEAD != `qa_swarm_marker_sha` and the diff
 `qa_swarm_marker_sha..HEAD` carries a substantive change — not just `*.md` or
 `*.txt` files, whitespace, or comment-only hunks (a docstring turned into a `#`
 comment is not a review trigger; a second router pass on that cost ~32k tokens
 for nothing). Invoke from the harness first, then the store. Pass the PR number,
-the diff path, and the model policy. Afterwards set `qa_swarm_marker_sha = HEAD`
+the diff path, the model policy, and any concrete related defects/PRs already
+known from this task; qa-swarm decides whether a systems-thinking lens is
+warranted. Do not launch a separate systems reviewer here or in review-triage.
+Afterwards set `qa_swarm_marker_sha = HEAD`
 — qa-swarm only comments, it never moves HEAD.
 
 Skipping despite qualifying changes needs an `AskUserQuestion` confirm, **round 1
 only**. Do not skip silently; "review fatigue" is not grounds.
 
-**b. review-triage.** Dispatch as an `Agent` at the bottom of the ladder. Pass
+**b. review-triage.** First read the unresolved threads in one GraphQL call. If
+that set equals `deferred_threads` and no review landed since the round began,
+record `resolved=0 actioned=0 promoted=0` and skip the runner. If at most two threads remain and every file they cite is
+already in this loop's context from this iteration, triage them inline in this
+turn instead of dispatching: a runner would re-read those files, which is the
+"same work twice" defect Step 6 checks for. Apply the `review-triage` rules as
+written and record the same fields. Otherwise dispatch as an `Agent` at the
+bottom of the ladder. Pass
 `head_sha_in` = this round's starting HEAD, the PR number / owner / repo / base,
 the diff path, `qa_swarm_marker_sha`, and `deferred_threads`. Relay its
 `narration` verbatim, prefixed with the round number. Record `new_head_sha`,
 `deferred_threads`, `unresolved_actionable_remaining`, `resolved`, `actioned`,
 `promoted`.
+
+Check each newly deferred thread before you add it to `deferred_threads`. Read
+the cited lines once. If the code already answers the finding, reply with that
+evidence, resolve the thread, and count it in `resolved`. Defer only a thread
+that needs a decision the code cannot answer. A runner that defers because
+`paul-pair` is unavailable has made no judgement, so always check those.
 
 **c. simplify when warranted.** Same gate shape, keyed off `simplify_marker_sha`
 and the post-triage HEAD. Dispatch an `Agent` with the simplify wrapper brief
@@ -270,6 +313,34 @@ so a branch stops containing its own base and the stack silently detaches. Then
 re-read every head, because each republish assigns a new one and Step 4's
 `headRefOid` guard compares against it.
 
+**Restack recipe.** For each layer above the changed one, bottom-up:
+
+```bash
+git rebase --onto <new base> <old base sha> <layer branch>
+git push --force-with-lease=<layer branch>:<remote sha> origin <layer branch>
+```
+
+`<old base sha>` is the head the layer below had **before** it changed. Take the
+lease sha from the remote head you read just before the rebase. Restack the next
+layer only after this push succeeds.
+
+**One layer at a time.** Dispatch the work for each layer as its own top-level
+`Agent`, in sequence, never nested and never in parallel: all layers share one
+working tree and one remote. Restack between layers, then re-read the heads, then
+start the next layer with its new `head_sha_in`.
+
+**Two guards before you touch a layer.** First, never sync, rebase, or push a
+layer that is in the merge queue: a force-push removes the PR from the queue.
+That includes a restack of any layer whose base is queued. Report it and wait.
+Second, run `git fetch` and fast-forward the layer branch just before every
+rebase. Bots push to layer branches, and a lease push over a stale local copy
+will either fail or destroy their commit.
+
+Do not trust a runner's claim that a layer is clean. Query the review threads
+for that layer directly (one GraphQL call) before you stamp it. When a runner
+defers a thread, answer it yourself, and quote the sha of the commit that fixes
+it.
+
 Before judging that a branch needs its base at all, check whether the repo
 actually gates on it. A `mergeStateStatus` of `BLOCKED` is a missing approval,
 not a stale base; `BEHIND` is the one that means out-of-date-and-required. Where
@@ -296,7 +367,9 @@ gh pr view <pr_number> --json isDraft,headRefOid
   which looks identical to "stamphog hasn't run yet".
 
 Then `gh pr edit <pr_number> --add-label stamphog` and set
-`stamphog_applied_for_sha = H2`.
+`stamphog_applied_for_sha = H2`. When the label is already on the PR, adding it
+again changes nothing and triggers no review: run `--remove-label stamphog`
+first, then `--add-label stamphog`.
 
 **Read the verdict** unconditionally at the end of Step 4 — even when the apply
 was skipped — in **one** call that also re-reads `updatedAt` for Step 5. The

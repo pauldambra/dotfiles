@@ -37,6 +37,7 @@ When the loop stops for good, list:
 
 - commits pushed (with short SHAs and messages),
 - threads resolved (count, grouped by "fixed" / "nit", each with the reason or
-  commit SHA — resolves carry no reply, so this is the only audit trail),
+  commit SHA, and the URL of the reply that explains it in the thread). A
+  resolved thread with no reply is a defect: reply in it before you hand back,
 - threads deferred (with file:line and one-line reason each),
 - final CI state, stamphog verdict, label state, and PR merge state.
