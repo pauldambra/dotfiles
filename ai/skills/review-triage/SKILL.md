@@ -1,34 +1,24 @@
 ---
 name: review-triage
 description: >
-  Triages the review conversation on a PR: runs qa-swarm when there are
-  substantive changes, classifies every unresolved review thread (qa-swarm,
-  AI/bot, and human) as actionable / nit / ambiguous, applies the clear
-  single-file fixes, resolves nits silently (reasons go in the report), runs
-  ambiguous AI/bot threads through paul-pair's autonomy ladder before
-  deferring so only genuine stop-and-ask cases reach a human, and defers any
-  thread with human participation. It never posts thread replies — responses
-  to humans always come from the PR author. Use when the user says
-  "/review-triage", "triage the review comments", "deal with the bot
-  comments", or "address the review feedback". Accepts an optional PR number
-  or URL as argument. Does not touch the branch base or the stamphog label.
+  Triages PR review threads, runs qa-swarm when needed, applies clear fixes,
+  and explains every bot-thread disposition in a reply before resolving.
+  Defers human-participated threads for the PR author. Use for /review-triage,
+  triage review comments, or address bot feedback; accepts a PR number or URL.
+  Does not manage branch base or stamphog.
 ---
-
 # Review Triage
 
 Triages the review threads on a PR. Runs qa-swarm when there are substantive
 changes, classifies every unresolved review thread (qa-swarm, bot, and human),
-applies the fixes that are clear and localised, resolves nits silently, runs
+applies the fixes that are clear and localised, explains nits in-thread before resolving them, runs
 ambiguous AI/bot threads through `paul-pair`'s autonomy ladder before
 deferring (see *Judgement rules for auto-actioning a comment*), and always
 defers threads with human participation to a human. Does **not** update the
 branch, watch CI, or manage the `stamphog` label — that is `ci-shepherd`'s and
 `pr-shepherd`'s job.
 
-**This skill never posts a comment to GitHub.** It never replies to a thread —
-not to a human's (responses to humans always come from the PR author), not to
-another bot's, not to its own. Bot threads it acts on are resolved silently;
-the reasoning lives in the run report and narration instead of in-thread.
+**Never resolve a review thread without a visible explanation in that thread.** For an all-bot thread, first reply with the disposition and evidence, then resolve it. A fix reply names its commit; a non-actionable reply explains why. Use the automated-comment header below because replies are posted through the authenticated user's account. If the reply fails, leave the thread open and report the failure. Do not reply to or resolve a thread with human participation; defer it to the PR author.
 
 ## Dual-mode — standalone vs `pr-shepherd` sub-step
 
@@ -217,23 +207,30 @@ Handle each class:
 
 - **Actionable:** apply the edit with `Edit`/`Write`, stage with `git add`,
   commit with a message like `fix: address qa-swarm <short description>`, push
-  with `git push`, then resolve the thread — no reply; the commit SHA and a
-  one-line description go in the narration and report. If `body_truncated ==
+  with `git push`, then reply with the commit SHA and a one-line explanation before resolving. Put the disposition in the narration and report too. If `body_truncated ==
   true` for this thread, refetch the full body first (see *Refetch full body
   before acting* below) so the fix isn't based on a clipped suggestion.
-- **NIT:** resolve the thread — no reply; record the one-line reason
+- **NIT:** reply with the one-line reason, then resolve the thread; record the reason
   ("intentional — <reason>" / "out of scope — follow-up" / "disagree —
   <reason>") in the report's per-thread lines.
 - **Ambiguous:** before deferring, run it through the `paul-pair` gate (see
   *Judgement rules for auto-actioning a comment*). If the gate promotes it to
-  just-do-it or recommend-and-ask, act on it and resolve the thread (count it
+  just-do-it or recommend-and-ask, act on it, reply with the disposition, then resolve the thread (count it
   as `promoted`, not `deferred`). Only a genuine stop-and-ask adds the thread
   id to `deferred_threads`, unresolved, included in the end-of-run report.
 
-To resolve a thread (never reply — resolving is the only mutation this skill
-performs on a thread):
+To resolve an all-bot thread, write a concise reply first. Begin every reply with this header:
+
+```markdown
+> [!NOTE]
+> 🤖 Automated comment by **Review Triage** — not written by a human
+```
+
+Put the exact reply in a temporary file, post it as a reply to the first review comment, and confirm success before resolving. `first_comment_id` comes from the thread query above. If the reply fails, leave the thread unresolved and surface the failure in the report.
 
 ```bash
+gh api repos/<owner>/<repo>/pulls/<pr_number>/comments/<first_comment_id>/replies \
+  -X POST -F body=@/tmp/review-triage-reply.md
 # resolve
 gh api graphql -f query='
   mutation($thread_id:ID!) {
@@ -282,11 +279,10 @@ whole thread human* in Step 3):
   Veria inline comments get missed) — match logins containing `greptile`,
   `veria`, `coderabbit`, `cursor`, `sonarcloud`, `codescene`, `sourcery`,
   `ellipsis`, plus stamphog/posthog-code, Claude review apps, and Dependabot.
-  Apply the Step 3 judgement rules: actionable -> fix and resolve; nit ->
-  resolve, reason in the report; ambiguous -> run the `paul-pair` gate before
+  Apply the Step 3 judgement rules: actionable -> fix, reply, and resolve; nit ->
+  reply with the reason, then resolve; ambiguous -> run the `paul-pair` gate before
   deferring, exactly as in Step 3 — promoted cases get fixed and resolved,
-  only genuine stop-and-ask cases go to `deferred_threads`. Never reply —
-  other bots' threads get the same silent resolve as qa-swarm's.
+  only genuine stop-and-ask cases go to `deferred_threads`. Reply before resolving, as in Step 3, for other bots' threads too.
 - **Human** — any participant is a real person, whether they opened the thread
   or replied in it. **Never auto-fix, auto-resolve, or reply** — they want a
   response or a decision from the author, not a silent edit and not a bot
@@ -336,8 +332,7 @@ for auto-actioning a comment*. Break `deferred` down by author, e.g.
 unresolved non-outdated thread you fetched ends as resolved, actioned,
 promoted, or deferred — never seen-but-unhandled. List each deferred thread's
 author, `file:line`, and a one-line reason under the summary, and each
-resolved thread's `file:line` with the reason or commit SHA — since resolves
-carry no reply, the report is the only audit trail. Then hand back (the skill
+resolved thread's `file:line` with the reason or commit SHA — so the report and thread reply agree on the disposition. Then hand back (the skill
 does not sleep or self-loop; wrap in `/loop` for cadence).
 
 **As a `pr-shepherd` sub-step:** end with exactly this structured result and
@@ -376,7 +371,7 @@ A thread is **actionable** only if **all** of these hold:
 - Applying it does not require new design decisions, new dependencies, or
   altering the PR's scope.
 
-Otherwise the thread is either a NIT (auto-resolve, reason in the report) or
+Otherwise the thread is either a NIT (reply with the reason before resolving) or
 **ambiguous**.
 
 ### The paul-pair gate — before deferring an ambiguous AI/bot thread
@@ -387,10 +382,9 @@ and apply its autonomy ladder to the thread's suggested change:
 
 - **Just do it** — the outcome is unambiguously better and there's essentially
   one sensible way to get there (a trivial, reversible improvement). Apply the
-  fix, commit, push, resolve the thread (no reply — commit SHA and description
-  in the report). Count it as `promoted`, not `deferred`.
+  fix, commit, push, reply with the commit SHA and reason, then resolve the thread. Record the disposition in the report. Count it as `promoted`, not `deferred`.
 - **Do it, but recommend and ask** — more than one reasonable solution exists.
-  Make the call, apply it, commit, push, resolve the thread — and the report
+  Make the call, apply it, commit, push, reply with the reasoning and commit SHA, then resolve the thread — and the report
   entry must state the one-line reasoning and the alternative considered (e.g.
   "did X because Y — alternative was Z, shout if you'd rather Z"). Count it as
   `promoted`. Surface these prominently in the report/narration (not folded
@@ -406,8 +400,7 @@ never auto-fixed, regardless of how trivial the change looks; that rule
 protects the human review conversation, which is a different concern from
 judging a fix's difficulty.
 
-**Invariant: an all-bot thread that has been addressed always ends resolved —
-silently; this skill never posts a thread reply.** The only threads left open
+**Invariant: an all-bot thread is resolved only after a visible disposition reply has been posted successfully.** The only threads left open
 are genuine stop-and-ask (paul-pair-confirmed) and anything with human
 participation. When in doubt about whether a fix is safe to apply at all,
 that doubt itself is the stop-and-ask signal — a nagging status line is

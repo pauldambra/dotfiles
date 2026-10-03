@@ -5,7 +5,6 @@ description: >
   by the PR, and reruns likely flaky or infrastructure jobs once. Use for
   /ci-shepherd, fix CI, branch currency, or CI status.
 ---
-
 # CI Shepherd
 
 Keeps a PR branch current with its base and actively shepherds failing CI and
@@ -48,6 +47,7 @@ Examples:
 [ci] step 2 — branch is BEHIND, updating from base via gh pr update-branch
 [ci] step 2 — base merged cleanly; local branch fast-forwarded to new HEAD
 [ci] step 2 — update-branch hit a base conflict; reporting and continuing to CI
+[ci] step 2 — base is another open PR's branch; stacked layer, skipping update-branch
 [ci] step 3 — CI: 8 pass, 4 pending, 2 fail; gathering failed leaf jobs
 [ci] step 4 — typecheck is PR-caused and reproduces locally; repairing
 [ci] step 4 — targeted checks pass; committed abc1234 and pushed
@@ -77,6 +77,16 @@ Record: PR number, owner/repo (parsed from `url`), base branch, HEAD SHA, PR
 state. If the PR state is `MERGED` or `CLOSED`, print that and stop.
 
 ### Step 2: Keep the branch current with its base
+
+**Stacked layer.** First check if the base branch belongs to another open PR:
+
+```bash
+gh pr list --repo <owner>/<repo> --head <base> --state open --json number --jq length
+```
+
+If the result is above 0, this PR is a layer in a stack. Do **not** run `gh pr update-branch`, and do not rebase or force-push. The merge commit it makes breaks the restack, and the stack owner restacks bottom-up (see `/stacking-prs`). Record `base_update.status = "stacked"` with a one-line reason, narrate it, and go to Step 3 with the unchanged HEAD. This holds for `BEHIND` and for `DIRTY`.
+
+Otherwise read the merge state:
 
 ```bash
 gh pr view <pr_number> --json mergeable,mergeStateStatus \
@@ -202,7 +212,7 @@ observed CI counts as the pre-repair snapshot and label them accordingly.
 **Standalone:** print a one-line summary —
 
 ```
-[ci] done — sha=<short_sha> base=<updated|current|conflict> repair=<committed|none|blocked> rerun=<N> observed_ci=<pass=N pending=N fail=N>
+[ci] done — sha=<short_sha> base=<updated|current|conflict|stacked> repair=<committed|none|blocked> rerun=<N> observed_ci=<pass=N pending=N fail=N>
 ```
 
 List repaired root causes and their validation commands, queued reruns, and
@@ -217,7 +227,7 @@ nothing after it —
 {
   "head_sha_in": "<HEAD when this skill started>",
   "new_head_sha": "<HEAD after base update/repair; == head_sha_in if none>",
-  "base_update": {"status": "updated|current|conflict", "reason": ""},
+  "base_update": {"status": "updated|current|conflict|stacked", "reason": ""},
   "ci": {"snapshot": "pre_repair", "pass": 0, "pending": 0, "fail": 0, "failing": [{"name": "", "link": ""}], "report": {"found": false, "warnings": [{"section": "", "status": "fixed|unrelated|needs-decision|unresolved", "reason": ""}]}},
   "repair": {
     "attempted": false,

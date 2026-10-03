@@ -13,6 +13,11 @@ current harness first, then from the PostHog skill store.
 2. **Store fallback:** fetch with `skill-get` and pass the body to the Agent.
    Follow `qa-swarm` inline — it coordinates its own reviewer agents.
 
+A harness copy is a snapshot, and it can be older than the store. On PR 108166
+a local `review-triage` resolved threads with no reply, a day after the store
+version started to require one. So put each rule the loop depends on in the
+skill-specific delta below, not only in the sub-skill.
+
 ### Store-fetch traps
 
 These cost real money when you hit them. All four were observed in one run.
@@ -37,11 +42,12 @@ These cost real money when you hit them. All four were observed in one run.
 Dispatch `review-triage` and `ci-shepherd` by load-then-spawn: pass the sub-skill
 body, the override brief, and the inputs to an `Agent`.
 
-Resolve `simplify` from the harness first, then the store. Spawn an Agent whose
-prompt carries the **simplify wrapper brief** and tells it to invoke
-`Skill("simplify")` when the harness provides it; otherwise fetch the store skill
-and load-then-spawn its body with the same wrapper. The runner edits the working
-tree, does not commit or push, and reports the files it changed.
+Spawn the simplify runner with the **simplify wrapper brief** and have it do the
+checks itself. Do not tell it to invoke `Skill("simplify")`: that skill starts
+its own reviewer agents in the background, and a runner that invokes it ends its
+turn with nothing returned. Observed twice (PRs 106341 and 106366), each time
+forcing a rerun on the next model. The runner edits the working tree, does not
+commit or push, and reports the files it changed.
 
 Spawn any runner that edits code in the caller's own working tree. Never give it
 `isolation: "worktree"`. A fresh worktree can start from the base branch rather
@@ -88,7 +94,9 @@ tell the runner to read files only where the patch is not enough.
 > that change. Read the supplied diff before reading any file; read a file only
 > where the diff is insufficient. End with the single structured result from your
 > Report step and nothing after it. Any sub-agent you spawn must run with
-> `run_in_background: false`, so it finishes inside your turn. Never end your turn
+> `run_in_background: false`, so it finishes inside your turn. A router, validator, or
+> single-scope reviewer never spawns sub-agents at all; do the work in your own turn.
+> Never end your turn
 > waiting on background work — no notification will reach you, and the dispatch is
 > lost. If a nested skill would background work you cannot wait on, do not invoke
 > it; do the analysis directly instead.
@@ -105,7 +113,10 @@ normal file-change result when needed.
   (AGENTS.md, a linter, a documented convention) is actionable, not a nit —
   apply the fix when it is a deterministic one-file change, otherwise defer it;
   never resolve it without acting. Resolving a thread is a change too, and the
-  cheapest runner has resolved a rule-citing P1 as a nit before. Inputs: PR number, owner/repo, base,
+  cheapest runner has resolved a rule-citing P1 as a nit before. Before you
+  resolve any thread, reply in it with your automated-comment header and the
+  reason: the fix commit SHA, or why it needs no change. If the reply fails,
+  leave the thread open. Return the reply URL with each resolve. Inputs: PR number, owner/repo, base,
   `head_sha_in`, `qa_swarm_marker_sha`, `deferred_threads`, `diff_path`. Narrate
   `[triage]` lines."
 - **ci-shepherd:** "Inputs: PR number, owner/repo, base, `head_sha_in`,
@@ -119,20 +130,34 @@ normal file-change result when needed.
   deletes is PR-caused and mechanical: finalize it with
   `visual-review-runs-finalize-create` (`approve_all: true`,
   `commit_to_github: true`); the server commits the trimmed baseline to the
-  branch, which moves HEAD. Any changed or new snapshot stays needs-decision."
+  branch, which moves HEAD. Before you classify a changed or new snapshot, call
+  `visual-review-runs-snapshot-history-list` for it. When the same change already
+  appears on the base branch or `master`, classify it as inherited from the base,
+  not PR-caused, and do not approve it on the PR. Any other changed or new
+  snapshot stays needs-decision. A compat-test-results warning
+  that names a test this PR adds for a new option is PR-caused and mechanical:
+  add the `compat-skips.ts` entry with reason `<option> added in #<pr>` and range
+  `<` the version the changeset will produce; confirm from the job log that the
+  old bundle only lacked the feature and did not break existing behaviour."
   Validate what it returns before you trust it: `ci` must carry
   `{pass,pending,fail,failing}`, and `base_update.status` must be `updated`,
-  `current`, or `conflict`. A malformed shape is evidence the runner skipped the
+  `current`, `conflict`, or `stacked`. A stacked layer returns `stacked`: the
+  runner did not touch the base on purpose. A malformed shape is evidence the runner skipped the
   real steps, not a formatting slip. One observed runner never called
   `gh pr checks` or `gh pr view --json mergeable` at all. It substituted local
   `mypy`, `ruff`, and pytest runs, then returned `ci` as an array of stage
   objects and `base_update.status: "not_attempted"`, and the caller had to redo
   the whole CI read. Reissue at the next model up rather than accepting it.
-- **simplify wrapper:** "Invoke the `simplify` skill (`Skill` tool,
-  `skill: 'simplify'`) — or, when this brief carries the store-fetched simplify
-  body, follow that body instead — against the diff at `<diff_path>` (base
-  `<base>` to current HEAD) on PR `<pr_number>` in `<owner>/<repo>`. Let it apply
-  its own fixes to the working tree. Do not commit or push — the caller does
+- **simplify wrapper:** "Do not invoke the `simplify` skill or spawn any agent.
+  Review the diff at `<diff_path>` (base `<base>` to current HEAD) on PR
+  `<pr_number>` in `<owner>/<repo>` yourself, in your own turn, for four things:
+  reuse (an existing helper or component already does this), simplification
+  (less code or fewer branches for the same behaviour), efficiency (wasted
+  work, repeated queries or renders), and altitude (logic in the wrong layer).
+  Prefer an extracted, well-named function or a test over an explanatory
+  comment. Apply only behaviour-preserving fixes to the working tree. Before you remove an import, grep the file
+  for the imported name or run the type check. A linter pass alone does not prove
+  the name is unused. Do not commit or push — the caller does
   that. Report back: the list of files changed (or 'no changes' if it found
   nothing to simplify), and a one-line summary per file."
 
@@ -159,3 +184,10 @@ outright, and offers a tool in their place. Establish which applies before the
 first dispatch, and when they are blocked, name the working mechanism in every
 brief that may commit. A runner that discovers this mid-task either fails its
 commit or reports a file change it never landed.
+
+**PostHog Desktop worktrees.** Commits are unsigned unless you pass `-S`. A
+push that changes `.github/workflows` files is refused over HTTPS, so push over
+SSH. A blobless worktree can stall a rebase while it scans for missing objects.
+In that case read the blobs through the GitHub API, replay the change with `git
+merge-tree`, then write the commit with `git commit-tree -S`. Name the method you
+use in every brief that may commit or push.

@@ -1,20 +1,17 @@
 ---
 name: qa-swarm
 description: >
-  Orchestrates a cheap-first PR review: a single router reviewer (gpt-sol) does
-  the first pass and delegates to stronger models (qa-team, paul-reviewer,
-  xp-reviewer, security-audit on kimi, escalating to opus then fable) only for
-  the parts it judges complex or dangerous, posting findings as inline GitHub
-  comments. Use when the user asks for "qa-swarm", "swarm review", or wants a
-  multi-perspective review posted to their PR. Accepts an optional PR number or
-  base branch as argument.
+  Orchestrates a cheap-first PR review: a router reviewer does the first pass
+  and delegates to specialist lenses (qa-team, paul-reviewer, xp-reviewer,
+  security-audit, or engineering-systems-thinking) only when warranted,
+  posting actionable findings as inline GitHub comments. Use for qa-swarm,
+  swarm review, or a multi-perspective PR review.
 ---
-
 # QA Swarm: Multi-Perspective PR Review
 
-Runs four independent review perspectives in parallel and posts findings as
-inline PR comments. Each reviewer operates independently — none knows about
-the others.
+Runs a cheap first-pass reviewer, conditionally delegates to specialist lenses,
+and posts actionable findings as inline PR comments. Delegated reviewers operate
+independently — none knows about the others.
 
 ## Bot identifier — REQUIRED on every posted comment
 
@@ -75,8 +72,10 @@ the user and mark it unavailable — the router will route around it (see
 *Graceful degradation*).
 
 Issue all four loads in **parallel** (single message, four tool calls) so the
-MCP round-trip does not serialize with the on-disk reads. The router (Step 3a)
-runs on `gpt-sol` and has no body to load — it's a direct prompt.
+MCP round-trip does not serialize with the on-disk reads. Do not preload
+`engineering-systems-thinking`: fetch it only if the router delegates that lens
+(Step 3b). The router (Step 3a) runs on `gpt-sol` and has no body to load —
+it's a direct prompt.
 
 **qa-team** (try these paths in order, stop at first hit):
 1. `<repo_root>/.agents/skills/qa-team/SKILL.md` (use `git rev-parse --show-toplevel`)
@@ -130,8 +129,13 @@ Follows `pr-shepherd`'s model policy — cheapest first, then validate.
 
 **Resolve the ladder against the models this harness actually accepts for an
 `Agent` before you pin any of them.** The names below are the PostHog Desktop
-ladder. A cloud task on the Claude runtime has `haiku` → `sonnet` → `opus` →
-`fable` instead, and `gpt-sol` and `kimi` do not exist there at all — pinning
+ladder. A cloud task on the Claude runtime has `sonnet` → `opus` →
+`fable` instead (`opus` means Opus 5.5, `claude-opus-5-5`, and `sonnet` means
+Sonnet 5, `claude-sonnet-5`; pass the full ID when the harness takes one) — start on `sonnet` and escalate only when evidence needs it,
+never on `haiku`: haiku runners skipped real steps often enough that reruns
+cost more than they saved. Opus 5.5 is $4/$20 per MTok versus Sonnet 5's
+$2/$10, so opus costs 2x sonnet, not the same. `gpt-sol` and `kimi` do not
+exist there at all — pinning
 one fails, and the *Graceful degradation* note at the end of this skill cannot
 rescue it, because its own fallback is `kimi` too. When the caller passes a
 model policy override, take its ladder verbatim and ignore every model name in
@@ -168,8 +172,12 @@ changed-file list, and the commit log. Tell it:
 - Decide whether to **delegate** part or all of the review to a stronger
   model, and if so which model + which reviewer lens + which scope.
   Minimise cost: delegate only what your own pass can't safely cover, scoped
-  to the concerning files/hunks. Delegating nothing (low danger, high
-  confidence) is the cheap path working as intended — do not pad the plan.
+  to the concerning files/hunks. When related defects/PRs or a shared contract
+  suggest a recurring mechanism the diff alone cannot settle, consider the
+  `engineering-systems-thinking` lens and pass the relevant related evidence;
+  do not infer a common cause just from similar diffs. Delegating nothing (low
+  danger, high confidence) is the cheap path working as intended — do not pad
+  the plan.
 - **One delegation is mandatory, whatever your own danger grade, when the diff
   trips an objective line:** more than ~400 lines, or it touches a production
   deploy or release path, auth, permissions, billing, a migration, or
@@ -200,7 +208,7 @@ DELEGATION_PLAN:
 danger: <LOW|MEDIUM|HIGH|CRITICAL>
 confidence: <HIGH|MEDIUM|LOW>
 delegations:
-- model: <kimi|opus|fable> | reviewer: <qa-team|paul-reviewer|xp-reviewer|security-audit|general> | scope: <file paths / hunks / "full"> | reason: <one line>
+- model: <kimi|opus|fable> | reviewer: <qa-team|paul-reviewer|xp-reviewer|security-audit|engineering-systems-thinking|general> | scope: <file paths / hunks / "full"> | reason: <one line>
 ...
 (empty list if no delegation)
 ```
@@ -215,7 +223,7 @@ chosen model, scoped to the entry's `scope`. Run independent delegations in
 parallel (single message, multiple Agent calls) so they run in true parallel.
 Each returns STRUCTURED_FINDINGS.
 
-The four subsections below are the **delegation targets** — their prompt
+The five subsections below are the **delegation targets** — their prompt
 shapes, reused verbatim when the router delegates to that reviewer. Pin the
 chosen model on each Agent (`kimi`, `opus`, or `fable`, per the delegation
 plan). Scope the diff material you pass to
@@ -305,6 +313,25 @@ Tell the agent to return findings in qa-swarm's `STRUCTURED_FINDINGS` format
 
 If the agent has no findings, return the `(none)` form described in the
 "Reviewer output format" section below.
+
+#### Reviewer target 5: engineering-systems-thinking
+
+Only when the router selects this lens, fetch its versioned body with
+`skill-get` (page until complete) and pass it to an Agent with the scoped diff
+and any concrete related PRs/reports supplied by the caller or already known.
+Fetch a bundled reference with `skill-file-get` only if its lens applies.
+Do not search broadly for related reports on every PR or invent missing evidence.
+
+Ask the Agent to apply the skill's systems lens, not impersonate a reviewer:
+trace the user-visible path and shared boundary, test a common-cause hypothesis
+against an alternative, and compare a local fix with the narrowest safe shared
+fix. Return `reviewer: engineering-systems-thinking` findings in the standard
+format only for evidence-backed, actionable risks introduced or left by this
+PR, anchored to a changed line where possible. If evidence does not support a
+structural finding, return `(none)` and say so in OVERALL_SUMMARY. Do not post
+a speculative architecture suggestion or the skill's entire decision record
+as a PR comment. If the body is unavailable, skip this lens and report the
+review gap rather than fabricating its conclusions.
 
 #### Reviewer output format
 
@@ -432,7 +459,7 @@ Build the body in this shape (current verdict on top, prior rounds folded):
 > [!NOTE]
 > 🤖 Automated comment by **QA Swarm** — not written by a human
 >
-> Multi-perspective review: router (cheap-first pass) + delegated reviewers (qa-team, paul-reviewer, xp-reviewer, security-audit as warranted)
+> Multi-perspective review: router (cheap-first pass) + delegated lenses (qa-team, paul-reviewer, xp-reviewer, security-audit, engineering-systems-thinking as warranted)
 
 ## Verdict: <emoji> <VERDICT> <sub>(round <N> @ <short_sha>)</sub>
 
