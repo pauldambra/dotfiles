@@ -116,7 +116,9 @@ normal file-change result when needed.
   cheapest runner has resolved a rule-citing P1 as a nit before. Before you
   resolve any thread, reply in it with your automated-comment header and the
   reason: the fix commit SHA, or why it needs no change. If the reply fails,
-  leave the thread open. Return the reply URL with each resolve. Inputs: PR number, owner/repo, base,
+  leave the thread open. Return the reply URL with each resolve. A check that cannot run because a
+  build or dependency is missing is not proof: do the setup and run it again,
+  or return a `validation_request`. Inputs: PR number, owner/repo, base,
   `head_sha_in`, `qa_swarm_marker_sha`, `deferred_threads`, `diff_path`. Narrate
   `[triage]` lines."
 - **ci-shepherd:** "Inputs: PR number, owner/repo, base, `head_sha_in`,

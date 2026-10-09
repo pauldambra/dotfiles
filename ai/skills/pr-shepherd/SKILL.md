@@ -353,7 +353,9 @@ nothing and costs a restack and a CI fan-out per layer.
 so re-applying the label on each new SHA is itself what re-triggers it. There is
 no dismissal-detection dance.
 
-Apply when `stamphog_applied_for_sha != H2`. First guard against a draft PR and
+First check that the repo runs stamphog at all: `gh api repos/<owner>/<repo>/contents/.github/workflows --jq '.[].name'` and grep the workflow files for `stamphog`. When none mentions it, skip this step's apply and verdict read, narrate `[shepherd] step 4 — repo has no stamphog workflow; approval is a human's`, and treat the stamphog part of the terminal condition as met.
+
+Skip the apply, narrate why, and go straight to reading the verdict when the PR already has a human approval (`reviewDecision` is `APPROVED`), or when the last stamphog review refused on the size gate. A new commit cannot change a size refusal, so another label only buys another refused run. Otherwise apply when `stamphog_applied_for_sha != H2`. First guard against a draft PR and
 an out-of-band push:
 
 ```bash
@@ -436,7 +438,7 @@ history says why.
 Stop cleanly and print the final summary when **any** of:
 
 - PR is `MERGED` or `CLOSED`.
-- `stamphog` is applied for the current SHA, CI has no failed checks or
+- `stamphog` is applied for the current SHA (or skipped under the Step 4 rule), CI has no failed checks or
   CI-report warnings needing an autonomous repair, no new bot threads since last
   iteration, and the only unresolved threads are in `deferred_threads`.
 - The user interrupts.
