@@ -28,6 +28,14 @@ ran clean, and the user has no way to tell the verdict is thin.
   wrapping Agent. It then runs on the session model, which is the expensive one —
   so under a budget, prefer skipping a runner to running it inline. Keep the same
   evidence and validation rules.
+- **`Agent` refused for a concurrency limit** (the harness says too many
+  subagents are running, often with "do not retry"): this is temporary, not
+  missing. Do not fall back to running inline on the session model. When
+  shepherds ran on 14 PRs at once, that fallback moved most of their cheap runner
+  work onto the expensive model. Wait about 60s and dispatch once more at the same
+  model. Only if that is refused too, run the step inline as above and narrate
+  the degradation. A caller shepherding many PRs should run few enough at once
+  that each one's runners fit under the limit (about 4 at a time).
 - **No model below the session model can be dispatched:** every runner will cost
   session-model rates. Narrate that, and cut the round cap to 2.
 - **No PR detected:** prompt the user (see Step 1) to paste a PR number/URL or
