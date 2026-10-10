@@ -132,6 +132,15 @@ report-only without a reason. On a stacked PR, use the current layer when it is
 the smallest safe place to resolve the warning. Do not defer it only because the
 PR is stacked, and do not change another PR branch in this invocation.
 
+**Check the base before you blame the PR.** CI builds the PR merged into the
+current base. A report section can compare that build with an older base SHA.
+Then a change that landed on the base after that SHA shows up as this PR's
+delta. Before you classify a report delta as PR-caused, check that the PR diff
+touches the files that cause it. If it does not, look for the change on the
+base with `git log <report base sha>..origin/<base> -- <path>`. When the base
+already has the change, classify the warning as `unrelated`. Give the commit or
+PR that caused it as the reason, and do not fix it on this PR.
+
 Aggregate checks next. The `|| true` matters: `gh pr checks` exits non-zero when a
 check is pending or failing, and that exit code is signal, not an error:
 

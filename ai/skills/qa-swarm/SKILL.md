@@ -161,7 +161,9 @@ The roles, named here with the Desktop ladder:
 
 #### 3a. Router pass
 
-Dispatch ONE router agent on the router model. Pass it the diff, the
+Dispatch ONE router agent on the router model, as `subagent_type: Explore`
+(it has no Agent tool, so it cannot start reviewers of its own: delegation
+happens only through its DELEGATION_PLAN, in 3b). Pass it the diff, the
 changed-file list, and the commit log. Tell it:
 
 - You are the sole first-pass reviewer. Review the full diff for

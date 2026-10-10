@@ -233,6 +233,13 @@ warranted. Do not launch a separate systems reviewer here or in review-triage.
 Afterwards set `qa_swarm_marker_sha = HEAD`
 — qa-swarm only comments, it never moves HEAD.
 
+A round whose only new commit is the previous round's simplify commit does not
+need a router when that diff is under about 20 lines and the type check and
+linter pass on it. Review it in this turn instead: confirm it keeps the same
+behaviour, then set `qa_swarm_marker_sha = HEAD`. A router that re-checked a
+6-line formatter extraction, which the checks had already proved, cost ~40k
+tokens and found nothing.
+
 Skipping despite qualifying changes needs an `AskUserQuestion` confirm, **round 1
 only**. Do not skip silently; "review fatigue" is not grounds.
 
