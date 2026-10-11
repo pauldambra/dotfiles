@@ -168,11 +168,11 @@ everything in **one** call — always `--jq` so only the needed fields reach
 context, and derive owner/repo from `url` rather than a second `gh repo view`:
 
 ```bash
-gh pr view --json number,url,headRefName,baseRefName,headRefOid,state,isDraft,updatedAt,labels \
-  --jq '{number, url, base: .baseRefName, head_sha: .headRefOid, state, isDraft, updatedAt, labels: [.labels[].name]}'
+gh pr view --json number,url,headRefName,baseRefName,headRefOid,state,isDraft,isCrossRepository,updatedAt,labels \
+  --jq '{number, url, base: .baseRefName, head_sha: .headRefOid, state, isDraft, isCrossRepository, updatedAt, labels: [.labels[].name]}'
 ```
 
-Record: PR number, owner/repo, base branch, HEAD SHA (`H0`), state, draft state,
+Record: PR number, owner/repo, base branch, HEAD SHA (`H0`), state, draft state, fork state,
 `updatedAt`, label names. If state is `MERGED` or `CLOSED`, **terminate** with a
 final status.
 
@@ -194,6 +194,20 @@ step 1 — no change since <short_sha>, stamphog present, no CI or report work �
 skipping iteration`, print the state line, and exit. Otherwise narrate that CI or
 its report needs work and continue. CI status and report changes may not advance
 `updatedAt`, so they must pass this gate.
+
+**Fork PRs are review-only.** Read `isCrossRepository` in the same `gh pr view`
+call. When it is `true`, the head branch belongs to someone outside the repo, so
+never push to it, even when `maintainerCanModify` allows it. In this mode:
+
+- qa-swarm runs and posts as usual.
+- review-triage only replies. It makes no fix commits. Defer every thread that
+  needs a code change to the author, with a reply that says what to change.
+- simplify does not run.
+- ci-shepherd diagnoses and reruns flaky jobs once. It makes no repair commit
+  and no base update. Put each PR-caused failure in the summary for the author.
+
+Say `[shepherd] step 1 — fork PR, review only` so the reader knows why nothing
+was pushed.
 
 If `isDraft == true`, run `gh pr ready <pr_number>` and carry on — invoking the
 shepherd is itself the signal that the PR is ready. Do not stop on draft.
@@ -379,6 +393,14 @@ Then `gh pr edit <pr_number> --add-label stamphog` and set
 `stamphog_applied_for_sha = H2`. When the label is already on the PR, adding it
 again changes nothing and triggers no review: run `--remove-label stamphog`
 first, then `--add-label stamphog`.
+
+A push to a PR that carries the label starts a stamphog run by itself. When you
+resolve a thread or edit the PR after that push, wait for that run to post its
+verdict, then re-add the label. The run read the PR before your change. When it
+refuses, it removes the label, so a re-add made while it runs is lost. Poll
+`latestReviews` for a stamphog review newer than the push, then apply. On PR
+114947 a re-add 9 seconds before the push run finished was lost, and the label
+had to go on a third time.
 
 **Read the verdict** unconditionally at the end of Step 4 — even when the apply
 was skipped — in **one** call that also re-reads `updatedAt` for Step 5. The
