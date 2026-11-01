@@ -182,8 +182,10 @@ changed-file list, and the commit log. Tell it:
   the plan.
 - **One delegation is mandatory, whatever your own danger grade, when the diff
   trips an objective line:** more than ~400 lines, or it touches a production
-  deploy or release path, auth, permissions, billing, a migration, or
-  concurrency. Scope it to the hunks you are least sure of. A LOW grade does
+  deploy or release path, auth, permissions, billing, a migration,
+  concurrency, or rendering content one user controls to other users (HTML,
+  images, links, URLs). For rendered content, ask who receives each request the
+  viewer's browser makes, not only whether script can run. Scope it to the hunks you are least sure of. A LOW grade does
   not excuse it, because the grade is the thing being checked: a router has
   graded an 806-line rewrite of a production deploy workflow LOW with high
   confidence and no delegation, on a diff that carried a HIGH defect it missed.
@@ -194,6 +196,8 @@ changed-file list, and the commit log. Tell it:
 delegation:
 
 - Touches auth, authorization, session, secrets, or crypto.
+- Renders content one user controls to other users (images, links, URLs,
+  markup), or decides which hosts a viewer's browser contacts.
 - Touches data ingestion, migration, schema, or destructive DB writes.
 - Touches concurrency, locking, or shared mutable state.
 - Touches billing, payments, or anything with direct revenue / blast impact.
@@ -350,6 +354,14 @@ OVERALL_SUMMARY:
 <1 paragraph assessment>
 ```
 
+`line` must be a line number in the PR's version of the file, and it must sit
+inside a diff hunk (a `+` line or a context line of the hunk). GitHub refuses an
+inline comment on any other line, and one bad anchor fails the whole review
+with `422 Line could not be resolved`. Do not use the line's position in the
+patch: a hunk `@@ -52,7 +52,22 @@` starts at file line 52. When the problem is in
+unchanged code, anchor to the changed line that causes it, and name the real
+`file:line` in the body. When no changed line fits, use `line: general`.
+
 If an agent has no findings, it returns:
 
 ```
@@ -413,6 +425,10 @@ gh api repos/{owner}/{repo}/pulls/{pr_number}/comments \
   -f commit_id="{HEAD_SHA}" \
   -f body="<comment_body>"
 ```
+
+Before you post, check each `line` against the hunk ranges in the diff (the
+`+start,count` of each `@@` header). Move a line outside every hunk to the
+changed line that causes it, or put the finding in the summary comment.
 
 Each inline comment body uses this format:
 
