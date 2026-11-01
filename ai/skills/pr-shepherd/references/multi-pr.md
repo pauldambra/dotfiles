@@ -51,8 +51,10 @@ The user should not read the whole table after every event.
 - **Totals:** add the metric for merged PRs and for open PRs, in separate lines.
   When each PR was measured alone against the same base, say that the open total
   is an estimate, because the cuts can overlap.
-- **Needs a human:** list these PRs in their own short section, with the reason
-  for each (team review, file limit, policy). The user acts on this list.
+- **Needs a human:** put these PRs in a table, never in a run of paragraphs.
+  One row per PR, with these columns: PR, what is needed, who can do it, why,
+  and your recommendation. Use the same table when you ask the user a question
+  about several PRs. A table lets the user scan the asks and answer each row.
 - **Dropped work:** say what was not done and why, in one line each, so the user
   can decide.
 
