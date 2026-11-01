@@ -119,7 +119,10 @@ sub-skills receive what they need and return updates, but never persist state.
 - `last_updated_at` — the PR's `updatedAt` at the end of the previous iteration.
   Step 1's fast path compares against it. `null` initially.
 - `bot_reviews_pending` — set by Step 1 when it flips a draft ready, cleared in
-  Step 2d once a bot review lands. `false` initially.
+  Step 2d once every expected bot has posted. `false` initially.
+- `expected_bots` — bot logins that already posted on this PR, each with a count
+  of iterations it has stayed silent since the ready flip. Set by Step 1 with
+  `bot_reviews_pending`. `[]` initially.
 
 In a stack, keep all of the state above **per layer**, keyed by PR number. A
 marker for one layer says nothing about another layer, and a restack gives every
@@ -187,7 +190,7 @@ merge`: it lands the chain outside the merge queue. Record the layers bottom to
 top. Run Steps 2 to 4 for one layer at a time, bottom first.
 
 **Fast path.** On a re-invocation with carried state, if `H0` == the previous
-HEAD *and* `updatedAt` == `last_updated_at` *and* `stamphog` is present, query
+HEAD *and* `updatedAt` == `last_updated_at` *and* `stamphog` is present *and* `bot_reviews_pending` is false, query
 `gh pr checks` and read the shared CI report as in `ci-shepherd` Step 3. Skip only
 when no check fails and no report warning needs work. Then narrate `[shepherd]
 step 1 — no change since <short_sha>, stamphog present, no CI or report work —
@@ -214,7 +217,10 @@ shepherd is itself the signal that the PR is ready. Do not stop on draft.
 
 Flipping a draft ready is also what *triggers* the repo's bot reviewers, and they
 take minutes to post. Set `bot_reviews_pending = true` when you flip it, so round
-1 does not read a not-yet-reviewed PR as a clean one.
+1 does not read a not-yet-reviewed PR as a clean one. In the same step, set
+`expected_bots` to the `[bot]` logins that already posted a review, a review
+comment or an issue comment on the PR. One review per bot on an earlier head is
+enough to expect it again.
 
 If `gh pr view` finds no PR, do **not** terminate silently. Ask the user
 (`AskUserQuestion`) to paste a PR number/URL, have the shepherd open one via
@@ -227,6 +233,18 @@ Run until a round is **dry**, capped at **4 rounds**. Normally that means at
 least 2 rounds, so round 1's fixes get re-reviewed. The exception: if round 1 is
 dry *and* qa-swarm actually ran in it, there is nothing to re-review — stop at
 one round and say so.
+
+**SDK changes.** When the diff changes an SDK implementation, public API, or
+runtime dependency, load Dustin's [`sdk-dustin-sdk-review`](https://us.posthog.com/project/2/llm-analytics/skills/sdk-dustin-sdk-review)
+from the skill store and run it before review-triage. Check package boundaries,
+including SDK packages in a monorepo; do not use the repository name alone.
+Use the same substantive-change gate as qa-swarm, reuse a completed review that
+covers the same SDK diff, and record its reviewed SHA. After SDK fixes, review
+the changed paths again. Use this skill's model ladder and diff-first dispatch.
+Bring calibrated findings into this quality loop and deduplicate them against
+qa-swarm and existing threads. Keep Dustin's draft-then-approve posting gate;
+invoking pr-shepherd does not authorize publication of that review's drafts.
+If the skill is unavailable, report the missing SDK review; do not claim it ran.
 
 For round `r`, against the previous round's HEAD (`H0` for round 1):
 
@@ -257,7 +275,11 @@ tokens and found nothing.
 Skipping despite qualifying changes needs an `AskUserQuestion` confirm, **round 1
 only**. Do not skip silently; "review fatigue" is not grounds.
 
-**b. review-triage.** First read the unresolved threads in one GraphQL call. If
+**b. review-triage.** First read the unresolved threads in one GraphQL call, plus
+the resolved threads whose last comment is not a reply from the shepherd or a
+human. Read them on this PR and on any merged PR in the same work. A thread
+resolved with no reply is still open work: on PR 117550 two Codex findings were
+resolved with no reply or fix, and the PR merged with both bugs. If
 that set equals `deferred_threads` and no review landed since the round began,
 record `resolved=0 actioned=0 promoted=0` and skip the runner. If at most two threads remain and every file they cite is
 already in this loop's context from this iteration, triage them inline in this
@@ -279,7 +301,10 @@ that needs a decision the code cannot answer. A runner that defers because
 
 **c. simplify when warranted.** Same gate shape, keyed off `simplify_marker_sha`
 and the post-triage HEAD. Dispatch an `Agent` with the simplify wrapper brief
-against the diff between base and current HEAD. It edits the working tree but
+from `references/dispatch.md` against the diff between base and current HEAD.
+Copy the brief; do not write your own. Never tell the runner to invoke
+`Skill("simplify")`: that skill starts its reviewers in the background, so the
+runner ends its turn with no report. It edits the working tree but
 does not commit — if it changed files, `git add`, commit
 (`refactor: apply simplify pass`), push. Set `simplify_marker_sha = HEAD` either
 way.
@@ -291,10 +316,15 @@ way.
 
 When `bot_reviews_pending` is true the round cannot be dry — the threads that
 matter have not been posted yet. Before the next round's triage, poll once:
-`gh pr view <pr_number> --json latestReviews --jq '[.latestReviews[].author.login]'`.
-If nothing has posted, wait ~90s and poll once more. Clear the flag as soon as a
-bot review lands, or after that second poll — a reviewer that never posts must
-not hold the loop open.
+`gh pr view <pr_number> --json latestReviews --jq '[.latestReviews[] | {login: .author.login, at: .submittedAt}]'`.
+If an expected bot has not posted since the ready flip, wait ~90s and poll once
+more. Clear the flag when every login in `expected_bots` has posted a review or
+comment newer than the ready flip. When `expected_bots` is empty, clear it as
+soon as any bot review lands. Never wait past the second poll. If a bot is still
+missing, keep the flag set, finish the iteration, and hand back, so the next
+iteration polls again. Add one to each missing bot's silent count and drop a bot
+after two silent iterations, so a reviewer that never posts cannot hold the PR
+open.
 
 Run both polls inline, in this loop's own turn. Never hand the poll to `Monitor`,
 to a background `Agent`, or to anything with `run_in_background: true`, and never
@@ -321,6 +351,10 @@ next iteration.
 If `base_update.status == "conflict"`, surface the one-line reason and
 **continue** to Step 4 — a base conflict blocks merge (the human's call), not
 review or stamping.
+
+When the merge queue removed the PR, read Trunk's failure and run that test
+locally, even when the PR's own checks are green. Jest selection on the PR can
+skip a test that the queue's full run executes.
 
 **Stacked PRs.** When the PR's base is another PR's branch, tell the runner not
 to base-update, restack, or force-push, and do not bring a base in for a lower
@@ -468,8 +502,8 @@ Stop cleanly and print the final summary when **any** of:
 
 - PR is `MERGED` or `CLOSED`.
 - `stamphog` is applied for the current SHA (or skipped under the Step 4 rule), CI has no failed checks or
-  CI-report warnings needing an autonomous repair, no new bot threads since last
-  iteration, and the only unresolved threads are in `deferred_threads`.
+  CI-report warnings needing an autonomous repair, `bot_reviews_pending` is
+  false, no new bot threads since last iteration, and the only unresolved threads are in `deferred_threads`.
 - The user interrupts.
 
 CI failures are **not** report-only: `ci-shepherd` must diagnose them and exhaust
@@ -482,6 +516,7 @@ When you stop for good, run Step 6 before handing back.
 
 ## Dependencies
 
-`review-triage`, `ci-shepherd`, `qa-swarm`, `simplify`; the `gh` CLI (repo, pr,
+`review-triage`, `ci-shepherd`, `qa-swarm`, `simplify`; for SDK changes,
+`sdk-dustin-sdk-review` from the skill store; the `gh` CLI (repo, pr,
 api, label, `pr update-branch`); `git`; and the `Agent` tool with model selection
 where available. Missing pieces are handled in `references/degradation.md`.

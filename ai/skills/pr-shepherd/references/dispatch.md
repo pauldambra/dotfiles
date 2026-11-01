@@ -156,6 +156,8 @@ normal file-change result when needed.
   reuse (an existing helper or component already does this), simplification
   (less code or fewer branches for the same behaviour), efficiency (wasted
   work, repeated queries or renders), and altitude (logic in the wrong layer).
+  Only make an efficiency change when the repeated work is I/O, a network call,
+  or a loop over input that can grow large; otherwise leave it.
   Prefer an extracted, well-named function or a test over an explanatory
   comment. Apply only behaviour-preserving fixes to the working tree. Before you remove an import, grep the file
   for the imported name or run the type check. A linter pass alone does not prove
@@ -171,6 +173,11 @@ change, the evidence, and the risk. Spawn a new Agent on the next available
 model and pass only that request and the narrow validation question. The
 validator returns `accept`, `reject`, or `needs-more-evidence` with a short
 reason.
+
+Send every `validation_request` to a validator, also one you lean toward
+rejecting. Do not reject it inline. On PR 117566 the loop turned down a
+simplify reuse suggestion without a validator, and a human reviewer then asked
+for the same reuse.
 
 If it accepts, re-dispatch the original sub-skill with the accepted request and
 permission to apply only that change. If it rejects, leave the code unchanged.
