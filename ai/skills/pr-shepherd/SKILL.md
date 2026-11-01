@@ -42,8 +42,9 @@ carries between invocations via `$ARGUMENTS` or the surrounding conversation.
 | `references/narration.md` | if unsure of the narration format |
 | `references/summary-format.md` | at Step 5 |
 | `references/degradation.md` | when something is missing or failing |
+| `references/multi-pr.md` | when one session coordinates more than one PR toward a shared goal |
 
-Use `skill-file-get`. Do not pull all four up front.
+Use `skill-file-get`. Do not pull all five up front.
 
 The body itself is paginated. Page it with `body_offset` and `body_length` and
 follow `body_next_offset` until it is `null`. Other keys (`offset`, `limit`) are
