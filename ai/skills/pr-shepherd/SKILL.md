@@ -266,9 +266,10 @@ warranted. Do not launch a separate systems reviewer here or in review-triage.
 Afterwards set `qa_swarm_marker_sha = HEAD`
 — qa-swarm only comments, it never moves HEAD.
 
-A round whose only new commit is the previous round's simplify commit does not
-need a router when that diff is under about 20 lines and the type check and
-linter pass on it. Review it in this turn instead: confirm it keeps the same
+A round whose only new commits are the previous round's simplify commit or
+review-triage fix commits does not need a router when that diff is under about
+20 lines and the type check and linter pass on it, or a test or repro proves
+the fix. Review it in this turn instead: confirm it keeps the same
 behaviour, then set `qa_swarm_marker_sha = HEAD`. A router that re-checked a
 6-line formatter extraction, which the checks had already proved, cost ~40k
 tokens and found nothing.
@@ -411,7 +412,7 @@ no dismissal-detection dance.
 
 First check that the repo runs stamphog at all: `gh api repos/<owner>/<repo>/contents/.github/workflows --jq '.[].name'` and grep the workflow files for `stamphog`. When none mentions it, skip this step's apply and verdict read, narrate `[shepherd] step 4 — repo has no stamphog workflow; approval is a human's`, and treat the stamphog part of the terminal condition as met.
 
-Skip the apply, narrate why, and go straight to reading the verdict when the PR already has a human approval (`reviewDecision` is `APPROVED`), or when the last stamphog review refused on the size gate. A new commit cannot change a size refusal, so another label only buys another refused run. Otherwise apply when `stamphog_applied_for_sha != H2`. First guard against a draft PR and
+Skip the apply, narrate why, and go straight to reading the verdict when the PR already has a human approval (`reviewDecision` is `APPROVED`), or when the last stamphog review refused on the size gate or on the deny-list. A new commit cannot change a size refusal, so another label only buys another refused run. A deny-list refusal follows the changed paths and the author, not the commit, so apply again only after the PR's changed-file list changes, and tell the user that the PR needs the human reviewer the verdict names. Otherwise apply when `stamphog_applied_for_sha != H2`. First guard against a draft PR and
 an out-of-band push:
 
 ```bash
@@ -436,6 +437,8 @@ refuses, it removes the label, so a re-add made while it runs is lost. Poll
 `latestReviews` for a stamphog review newer than the push, then apply. On PR
 114947 a re-add 9 seconds before the push run finished was lost, and the label
 had to go on a third time.
+
+When stamphog refuses because no independent review covers the current head, check PostHog Review before you escalate: `call review-hog-reviews-pr-status {"pr_url": "<url>"}`. It does not always run on later pushes, and stamphog reads its report directly, including a zero-finding turn that never posts to GitHub (`turn_published: false`). When `latest_review.head_sha` is not the current HEAD, request one with `call review-hog-reviews-trigger {"pr_url": "<url>", "run_mode": "flash"}` (Standard; it never resolves, so it pushes nothing; send `review_only` once the PR has a Deep review). Poll `review-hog-reviews-pr-status` with the returned `requested_at`, `head_sha` and `run_mode` about a minute apart, inline as in Step 2d, until `request_outcome.status` is not `pending`, then re-add the label once.
 
 **Read the verdict** unconditionally at the end of Step 4 — even when the apply
 was skipped — in **one** call that also re-reads `updatedAt` for Step 5. The
