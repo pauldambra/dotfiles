@@ -85,8 +85,11 @@ for cmd_file in "$AI_DIR"/commands/*.md; do
 done
 
 LINK_MEMORY="$AI_DIR/skills/manage-claude-memory/scripts/link-memory.sh"
+MEMORY_DIR="${CLAUDE_MEMORY_DIR:-$HOME/private-claude-memory}"
 if [ "${SKIP_CLAUDE_MEMORY:-}" = "1" ]; then
   echo "Skipping Claude memory dirs"
+elif [ ! -d "$MEMORY_DIR" ]; then
+  echo "Skipping Claude memory dirs: clone pauldambra/private-claude-memory to $MEMORY_DIR"
 elif [ -x "$LINK_MEMORY" ]; then
   echo "Linking Claude memory dirs..."
   "$LINK_MEMORY"

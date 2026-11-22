@@ -11,3 +11,6 @@
 *.swp
 *.swo
 *~
+
+# Claude memories live in the private repo pauldambra/private-claude-memory
+ai/claude-memory/

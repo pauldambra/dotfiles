@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
 # Symlink each per-project memory dir under the PostHog Code app's storage
-# at the source of truth in ~/dotfiles/ai/claude-memory/<project-key>/.
+# at the source of truth in ~/private-claude-memory/<project-key>/ (a private repo).
 #
 # Usage:
-#   link-memory.sh             # link every project key found in dotfiles
+#   link-memory.sh             # link every project key in the memory dir
 #   link-memory.sh <key>       # link a single project key
 
 set -euo pipefail
 
-DOT_BASE="${HOME}/dotfiles/ai/claude-memory"
+DOT_BASE="${CLAUDE_MEMORY_DIR:-${HOME}/private-claude-memory}"
 CODE_BASE="${HOME}/Library/Application Support/@posthog/posthog-code/claude/projects"
 
 link_one() {
@@ -18,7 +18,7 @@ link_one() {
   local target="${CODE_BASE}/${key}/memory"
 
   if [[ ! -d "$source" ]]; then
-    echo "  skip ${key}: dotfiles source missing (${source})"
+    echo "  skip ${key}: memory source missing (${source})"
     return 0
   fi
 
