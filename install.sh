@@ -17,3 +17,8 @@ SKIP_CLAUDE_MEMORY=1 bash "$DOTFILES_ROOT/ai/install"
 mkdir -p "$HOME/.codex"
 ln -sfn "$DOTFILES_ROOT/ai/AGENTS.md" "$HOME/.codex/AGENTS.md"
 echo "Linked AGENTS.md to $HOME/.codex/AGENTS.md"
+
+# Claude Code's user-level instructions file, loaded whatever the working directory.
+mkdir -p "$HOME/.claude"
+ln -sfn "$DOTFILES_ROOT/ai/AGENTS.md" "$HOME/.claude/CLAUDE.md"
+echo "Linked AGENTS.md to $HOME/.claude/CLAUDE.md"
