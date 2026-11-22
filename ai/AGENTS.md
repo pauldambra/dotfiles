@@ -2,7 +2,9 @@
 
 * never open github issues without explicit confirmation
 * any comment made or message posted on my behalf (e.g. on GitHub) must always have a prefix making clear it is from a robot
+  * except a bot command that only works as the first text of a comment (e.g. `/trunk merge`, `@posthog review`). post the bare command and nothing else
 * write as if the reader has a reading age of around 12 years old. simplicity and clarity are important
+* before asking me a question, run the paul-pair skill to decide whether to act, recommend-and-ask, or stop-and-ask
 
 # Approach to work
 
@@ -57,6 +59,10 @@ The work of software engineering is to keep the software buildable, workable, ma
 Prefer completing straightforward work in the primary agent. Delegate only independent work where parallelism outweighs the additional context and coordination cost.
 
 # tests
+
+## Local PostHog development
+
+On my Mac, Docker services and databases run in a PostHog devbox. Before running database-backed tests, migrations, Docker, or the full application stack, read the repository's `setting-up-devbox` skill and use a devbox assigned to the current worktree. Do not install or start local Docker or database servers as a workaround. Local editing, linting, type checks, and tests that need no services can run locally. A missing local database is a reason to use the devbox, not to leave validation unfinished.
 
 i prefer TDD
 
